@@ -1,0 +1,87 @@
+[package]
+name = "foundation-models"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+homepage = "https://github.com/doom-fish/foundation-models-rs"
+repository = "https://github.com/doom-fish/foundation-models-rs"
+description = "Safe Rust bindings for Apple's FoundationModels framework - on-device LLM on macOS 26+"
+authors = ["Per Johansson <per@doom.fish>"]
+keywords = ["foundation-models", "llm", "macos", "ai", "apple-intelligence"]
+categories = ["api-bindings", "os::macos-apis"]
+rust-version = "1.70"
+readme = "README.md"
+build = "build.rs"
+include = [
+    "src/**/*",
+    "swift-bridge/Package.swift",
+    "swift-bridge/Sources/**/*",
+    "build.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-*",
+    "CHANGELOG.md",
+]
+
+[lints.rust]
+# TODO: Enable after adding unsafe blocks inside unsafe fns
+# unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+
+[lib]
+name = "foundation_models"
+crate-type = ["lib"]
+
+[features]
+default = []
+cargo-clippy = []
+
+# Async support (executor-agnostic, works with any async runtime)
+async = []
+
+# macOS version feature flags. FoundationModels was introduced in macOS 26.0.
+# Future point-releases (26.1, 26.2, ...) will add features and live behind their
+# own flag so consumers can opt into stub builds when targeting older SDKs.
+macos_26_0 = []
+
+[dependencies]
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+
+[package.metadata.docs.rs]
+all-features = true
+default-target = "aarch64-apple-darwin"
+targets = ["aarch64-apple-darwin", "x86_64-apple-darwin"]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[badges]
+maintenance = { status = "actively-developed" }
+
+[[example]]
+name = "01_hello"
+required-features = ["macos_26_0"]
+
+[[example]]
+name = "02_streaming"
+required-features = ["macos_26_0"]
+
+[[example]]
+name = "03_instructions"
+required-features = ["macos_26_0"]
+
+[[example]]
+name = "04_options"
+required-features = ["macos_26_0"]
+
+[[example]]
+name = "05_async"
+required-features = ["macos_26_0", "async"]
+
+[profile.release]
+debug = "full"
+strip = "none"
