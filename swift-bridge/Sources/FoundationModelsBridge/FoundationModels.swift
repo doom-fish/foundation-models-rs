@@ -262,10 +262,12 @@ public func fm_session_stream_response(
                 )
                 var lastEmitted = ""
                 for try await partial in stream {
-                    // FoundationModels emits the full accumulated string on
-                    // each tick; expose only the delta so Rust callers can
-                    // print without de-duplicating.
-                    let full = String(describing: partial)
+                    // partial is a Snapshot whose `content` is the
+                    // accumulated PartiallyGenerated value (a plain String
+                    // for the string-typed streamResponse overload).
+                    // Emit only the delta so Rust callers can print
+                    // without de-duplicating.
+                    let full = partial.content
                     let delta: String
                     if full.hasPrefix(lastEmitted) {
                         delta = String(full.dropFirst(lastEmitted.count))
