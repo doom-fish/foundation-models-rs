@@ -14,6 +14,8 @@
 //! `GenerationGuide`, and friends are explicitly out of scope for this minor
 //! release and live in their own omitted sets.
 
+#![allow(clippy::cast_precision_loss, clippy::iter_on_single_items)]
+
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::process::Command;
@@ -307,6 +309,35 @@ fn sampling_mode_coverage() {
     .collect();
     Report {
         type_name: "GenerationOptions.SamplingMode",
+        apple,
+        referenced,
+        omitted,
+    }
+    .run()
+    .unwrap();
+}
+
+#[test]
+fn response_stream_snapshot_coverage() {
+    // `LanguageModelSession.ResponseStream<Content>.Snapshot` is the per-token
+    // delta type yielded by `streamResponse(to:options:)`. Our streaming
+    // bridge reads `partial.content` to get the accumulated text — verify
+    // the field is actually called `content` in Apple's swiftinterface so a
+    // future SDK rename can't silently break us.
+    let si = read_swiftinterface();
+    let apple = extract_type_surface(&si, "Snapshot");
+    let referenced = references_in_bridge(&apple);
+    let omitted: BTreeSet<String> = [
+        // We surface only `.content` — the accumulated PartiallyGenerated value.
+        // `rawContent` exposes the underlying `GeneratedContent` for schema-
+        // driven structured generation, which lands in v0.2.
+        "rawContent",
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect();
+    Report {
+        type_name: "LanguageModelSession.ResponseStream.Snapshot",
         apple,
         referenced,
         omitted,
