@@ -8,9 +8,11 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 - **Streaming** — text deltas and structured-generation snapshots
 - **Tool calling** — register Rust callbacks as `FoundationModels` `Tool`s
 - **Structured generation** — JSON-schema validation, dynamic schemas, string-choice schemas, array guides, and Rust `Generable` traits
+- **Structured content helpers** — typed `GenerationId`, string-backed `Decimal`, `GeneratedContentKind`, and generated-content builders with optional IDs
 - **System model configuration** — availability, use cases, guardrails, locales, and adapter handles
 - **Transcript support** — typed transcript inspection plus raw JSON round-tripping
 - **Response / tool definitions** — `ResponseFormat::generating`, inferred `Tool::generable`, and transcript `ToolDefinition` helpers
+- **Typed error metadata** — `FMError` accessors for recovery suggestions, refusal helpers, tool-call details, and schema/generation contexts
 - **Feedback attachments** — full `LanguageModelFeedback` issue/sentiment support
 
 ## Requirements
@@ -24,7 +26,7 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.7.0", features = ["macos_26_0"] }
+foundation-models = { version = "0.7.1", features = ["macos_26_0"] }
 ```
 
 ## Quick start
@@ -152,7 +154,8 @@ cargo run --example 07_schema_surface --features macos_26_0
 
 - Swift-only compile-time macros such as `@Generable` and `@Guide` are exposed as Rust runtime traits/builders (`Generable`, `GenerationGuide`, `DynamicGenerationSchema`).
 - `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` is not wrapped because it depends on `BackgroundAssets.AssetPack`, which this crate does not expose.
-- `GenerationID` remains opaque in the Apple SDK; generated-content IDs are surfaced as best-effort string metadata.
+- `GenerationID` now round-trips as `GenerationId` via `GeneratedContent::generation_id_handle()`; `GeneratedContent::generation_id()` remains as a best-effort string helper.
+- Typed generation/schema refusal metadata is available through `FMError::{generation_error_context, schema_error_context, recovery_suggestion, failure_reason, refusal, tool_call_error}`.
 - Xcode 26.2's `FoundationModels.swiftinterface` does **not** expose standalone `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, or `Streaming` symbols; see [`COVERAGE.md`](COVERAGE.md) for the audited matrix.
 
 ## License

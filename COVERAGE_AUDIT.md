@@ -1,10 +1,10 @@
 # foundation-models coverage audit (vs MacOSX26.2.sdk)
 
 SDK_PUBLIC_SYMBOLS: 378
-VERIFIED: 233
-GAPS: 31
+VERIFIED: 259
+GAPS: 5
 EXEMPT: 114
-COVERAGE_PCT: 88.3%
+COVERAGE_PCT: 98.1%
 
 Methodology: counted non-macro public class/struct/enum/protocol/func/var/typealias declarations plus public initializers from `FoundationModels.swiftinterface`; initializers are included because they are user-facing constructors. Excluded the framework's 4 public macros from the totals because the audit brief scoped counting to those declaration kinds.
 
@@ -44,24 +44,32 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `Swift.Double.generationSchema` | Var | `FoundationModels.swiftinterface:L141` | `f64: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `Swift.Double.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L144` | `f64: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `Swift.Double.generatedContent` | Var | `FoundationModels.swiftinterface:L145` | `f64: FromGeneratedContent/ToGeneratedContent/Generable` |
+| `Foundation.Decimal.generationSchema` | Var | `FoundationModels.swiftinterface:L153` | `Decimal: FromGeneratedContent/ToGeneratedContent/Generable` |
+| `Foundation.Decimal.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L156` | `Decimal: FromGeneratedContent/ToGeneratedContent/Generable` |
+| `Foundation.Decimal.generatedContent` | Var | `FoundationModels.swiftinterface:L157` | `Decimal: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `Swift.Array.PartiallyGenerated` | Typealias | `FoundationModels.swiftinterface:L165` | `StructuredStreamSnapshot::content_json + GeneratedContent` |
 | `Swift.Array.generationSchema` | Var | `FoundationModels.swiftinterface:L166` | `Vec<T>: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `Swift.Array.generatedContent` | Var | `FoundationModels.swiftinterface:L174` | `Vec<T>: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `Swift.Array.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L182` | `Vec<T>: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `GeneratedContent` | Struct | `FoundationModels.swiftinterface:L199` | `content::GeneratedContent` |
 | `GeneratedContent.generationSchema` | Var | `FoundationModels.swiftinterface:L200` | `Generable for GeneratedContent` |
-| `GeneratedContent.id` | Var | `FoundationModels.swiftinterface:L203` | `GeneratedContent::generation_id()` |
+| `GeneratedContent.id` | Var | `FoundationModels.swiftinterface:L203` | `GeneratedContent::{generation_id_handle, generation_id}` |
 | `GeneratedContent.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L204` | `GeneratedContent::{from_value, TryFrom<Value>}` |
 | `GeneratedContent.generatedContent` | Var | `FoundationModels.swiftinterface:L205` | `ToGeneratedContent for GeneratedContent` |
+| `GeneratedContent.init(properties: Swift.KeyValuePairs<Swift.String, any FoundationModels.ConvertibleToGeneratedContent>, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L209` | `GeneratedContent::{from_properties, from_properties_with_id}` |
+| `GeneratedContent.init(properties: S, id: FoundationModels.GenerationID? = nil, uniquingKeysWith combine: (FoundationModels.GeneratedContent, FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L212` | `GeneratedContent::{from_properties, from_properties_with}` |
+| `GeneratedContent.init(elements: S, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L215` | `GeneratedContent::{from_elements, from_elements_with_id}` |
 | `GeneratedContent.init(_ value: some ConvertibleToGeneratedContent)` | Init | `FoundationModels.swiftinterface:L217` | `GeneratedContent::{from_value, TryFrom<Value>}` |
+| `GeneratedContent.init(_ value: some ConvertibleToGeneratedContent, id: FoundationModels.GenerationID)` | Init | `FoundationModels.swiftinterface:L218` | `GeneratedContent::{from_value, from_value_with_id}` |
 | `GeneratedContent.init(json: Swift.String)` | Init | `FoundationModels.swiftinterface:L219` | `GeneratedContent::from_json_str()` |
 | `GeneratedContent.jsonString` | Var | `FoundationModels.swiftinterface:L220` | `GeneratedContent::json_string()` |
 | `GeneratedContent.value(_ type: Value.Type = Value.self)` | Func | `FoundationModels.swiftinterface:L223` | `GeneratedContent::{value, value_for_property}` |
 | `GeneratedContent.value(_ type: Value.Type = Value.self, forProperty property: Swift.String)` | Func | `FoundationModels.swiftinterface:L224` | `GeneratedContent::{value, value_for_property}` |
 | `GeneratedContent.value(_ type: Value?.Type = Value?.self, forProperty property: Swift.String)` | Func | `FoundationModels.swiftinterface:L226` | `GeneratedContent::{value, value_for_property}` |
 | `GeneratedContent.isComplete` | Var | `FoundationModels.swiftinterface:L231` | `GeneratedContent::is_complete()` |
-| `GeneratedContent.Kind` | Enum | `FoundationModels.swiftinterface:L240` | `GeneratedContent::{raw_value, into_raw_value}()` |
-| `GeneratedContent.kind` | Var | `FoundationModels.swiftinterface:L252` | `GeneratedContent::{raw_value, into_raw_value}()` |
+| `GeneratedContent.Kind` | Enum | `FoundationModels.swiftinterface:L240` | `GeneratedContentKind` |
+| `GeneratedContent.init(kind: FoundationModels.GeneratedContent.Kind, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L250` | `GeneratedContent::{from_kind, from_kind_with_id}` |
+| `GeneratedContent.kind` | Var | `FoundationModels.swiftinterface:L252` | `GeneratedContent::kind()` |
 | `GenerationGuide` | Struct | `FoundationModels.swiftinterface:L259` | `schema::GenerationGuide::*` |
 | `GenerationGuide.constant(_ value: Swift.String)` | Func | `FoundationModels.swiftinterface:L265` | `schema::GenerationGuide::*` |
 | `GenerationGuide.anyOf(_ values: [Swift.String])` | Func | `FoundationModels.swiftinterface:L266` | `schema::GenerationGuide::*` |
@@ -101,9 +109,21 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `LanguageModelSession.respond(to prompt: FoundationModels.Prompt, generating type: Content.Type = Content.self, includeSchemaInPrompt: Swift.Bool = true, options: FoundationModels.GenerationOptions = GenerationOptions()` | Func | `FoundationModels.swiftinterface:L383` | `LanguageModelSession::{respond, respond_prompt, respond_generated, respond_generating}` |
 | `LanguageModelSession.respond(to prompt: Swift.String, generating type: Content.Type = Content.self, includeSchemaInPrompt: Swift.Bool = true, options: FoundationModels.GenerationOptions = GenerationOptions()` | Func | `FoundationModels.swiftinterface:L387` | `LanguageModelSession::{respond, respond_prompt, respond_generated, respond_generating}` |
 | `LanguageModelSession.streamResponse(to prompt: FoundationModels.Prompt, schema: FoundationModels.GenerationSchema, includeSchemaInPrompt: Swift.Bool = true, options: FoundationModels.GenerationOptions = GenerationOptions()` | Func | `FoundationModels.swiftinterface:L397` | `LanguageModelSession::{stream, stream_prompt, stream_generated}` |
-| `LanguageModelSession.GenerationError` | Enum | `FoundationModels.swiftinterface:L420` | `FMError variants` |
+| `LanguageModelSession.GenerationError` | Enum | `FoundationModels.swiftinterface:L420` | `FMError variants + typed metadata accessors` |
+| `LanguageModelSession.GenerationError.Context` | Struct | `FoundationModels.swiftinterface:L424` | `GenerationErrorContext` |
+| `LanguageModelSession.GenerationError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L425` | `GenerationErrorContext::debug_description()` |
+| `LanguageModelSession.GenerationError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L426` | `GenerationErrorContext::new()` |
+| `LanguageModelSession.GenerationError.Refusal` | Struct | `FoundationModels.swiftinterface:L431` | `Refusal` |
+| `LanguageModelSession.GenerationError.Refusal.init(transcriptEntries: [FoundationModels.Transcript.Entry])` | Init | `FoundationModels.swiftinterface:L432` | `Refusal::new()` |
+| `LanguageModelSession.GenerationError.Refusal.explanation` | Var | `FoundationModels.swiftinterface:L433` | `Refusal::explanation()` |
+| `LanguageModelSession.GenerationError.Refusal.explanationStream` | Var | `FoundationModels.swiftinterface:L436` | `Refusal::explanation_stream()` |
 | `LanguageModelSession.GenerationError.errorDescription` | Var | `FoundationModels.swiftinterface:L450` | `FMError::message() / Display` |
-| `LanguageModelSession.ToolCallError` | Struct | `FoundationModels.swiftinterface:L468` | `FMError::ToolCallFailed` |
+| `LanguageModelSession.GenerationError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L455` | `FMError::recovery_suggestion()` |
+| `LanguageModelSession.GenerationError.failureReason` | Var | `FoundationModels.swiftinterface:L460` | `FMError::failure_reason()` |
+| `LanguageModelSession.ToolCallError` | Struct | `FoundationModels.swiftinterface:L468` | `ToolCallError + FMError::tool_call_error()` |
+| `LanguageModelSession.ToolCallError.tool` | Var | `FoundationModels.swiftinterface:L469` | `ToolCallError::tool()` |
+| `LanguageModelSession.ToolCallError.underlyingError` | Var | `FoundationModels.swiftinterface:L470` | `ToolCallError::underlying_error()` |
+| `LanguageModelSession.ToolCallError.init(tool: any FoundationModels.Tool, underlyingError: any Swift.Error)` | Init | `FoundationModels.swiftinterface:L471` | `ToolCallError::new()` |
 | `LanguageModelSession.ToolCallError.errorDescription` | Var | `FoundationModels.swiftinterface:L473` | `FMError::message() / Display` |
 | `LanguageModelSession.ResponseStream` | Struct | `FoundationModels.swiftinterface:L483` | `StructuredStreamEvent / StructuredStreamSnapshot` |
 | `LanguageModelSession.ResponseStream.Snapshot` | Struct | `FoundationModels.swiftinterface:L484` | `StructuredStreamSnapshot` |
@@ -219,6 +239,8 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `DynamicGenerationSchema.init(referenceTo name: Swift.String)` | Init | `FoundationModels.swiftinterface:L1295` | `DynamicGenerationSchema / DynamicGenerationProperty` |
 | `DynamicGenerationSchema.Property` | Struct | `FoundationModels.swiftinterface:L1299` | `schema::DynamicGenerationProperty` |
 | `DynamicGenerationSchema.Property.init(name: Swift.String, description: Swift.String? = nil, schema: FoundationModels.DynamicGenerationSchema, isOptional: Swift.Bool = false)` | Init | `FoundationModels.swiftinterface:L1301` | `schema::DynamicGenerationProperty` |
+| `GenerationID` | Struct | `FoundationModels.swiftinterface:L1308` | `GenerationId` |
+| `GenerationID.init()` | Init | `FoundationModels.swiftinterface:L1309` | `GenerationId::new()` |
 | `GenerationOptions` | Struct | `FoundationModels.swiftinterface:L1319` | `generation::{GenerationOptions, SamplingMode}` |
 | `GenerationOptions.SamplingMode` | Struct | `FoundationModels.swiftinterface:L1323` | `generation::{GenerationOptions, SamplingMode}` |
 | `GenerationOptions.SamplingMode.greedy` | Var | `FoundationModels.swiftinterface:L1324` | `generation::{GenerationOptions, SamplingMode}` |
@@ -239,7 +261,11 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `GenerationSchema.init(type: any FoundationModels.Generable.Type, description: Swift.String? = nil, anyOf types: [any FoundationModels.Generable.Type])` | Init | `FoundationModels.swiftinterface:L1374` | `GenerationSchema::{from_json_schema, from_dynamic}` |
 | `GenerationSchema.init(root: FoundationModels.DynamicGenerationSchema, dependencies: [FoundationModels.DynamicGenerationSchema])` | Init | `FoundationModels.swiftinterface:L1376` | `GenerationSchema::{from_json_schema, from_dynamic}` |
 | `GenerationSchema.SchemaError` | Enum | `FoundationModels.swiftinterface:L1380` | `FMError from schema validation/compilation` |
+| `GenerationSchema.SchemaError.Context` | Struct | `FoundationModels.swiftinterface:L1384` | `SchemaErrorContext` |
+| `GenerationSchema.SchemaError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L1385` | `SchemaErrorContext::debug_description()` |
+| `GenerationSchema.SchemaError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L1386` | `SchemaErrorContext::new()` |
 | `GenerationSchema.SchemaError.errorDescription` | Var | `FoundationModels.swiftinterface:L1393` | `FMError::message() / Display` |
+| `GenerationSchema.SchemaError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L1398` | `FMError::recovery_suggestion()` |
 | `GenerationSchema.init(from decoder: any Swift.Decoder)` | Init | `FoundationModels.swiftinterface:L1403` | `GenerationSchema::{from_json_schema, from_dynamic}` |
 | `GenerationSchema.encode(to encoder: any Swift.Encoder)` | Func | `FoundationModels.swiftinterface:L1404` | `GenerationSchema::json_schema() / from_json_schema()` |
 | `LanguageModelFeedback` | Struct | `FoundationModels.swiftinterface:L1409` | `FeedbackSentiment / FeedbackIssue / FeedbackAttachmentRequest` |
@@ -254,37 +280,11 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 ## 🔴 GAPS
 | Symbol | Kind | Header | Notes |
 | --- | --- | --- | --- |
-| `Foundation.Decimal.generationSchema` | Var | `FoundationModels.swiftinterface:L153` | No public Rust decimal value type; only decimal schema/guide builders are exposed. |
-| `Foundation.Decimal.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L156` | No public Rust decimal value type; only decimal schema/guide builders are exposed. |
-| `Foundation.Decimal.generatedContent` | Var | `FoundationModels.swiftinterface:L157` | No public Rust decimal value type; only decimal schema/guide builders are exposed. |
-| `GeneratedContent.init(properties: Swift.KeyValuePairs<Swift.String, any FoundationModels.ConvertibleToGeneratedContent>, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L209` | Overloads that require a typed GenerationID are not wrapped. |
-| `GeneratedContent.init(properties: S, id: FoundationModels.GenerationID? = nil, uniquingKeysWith combine: (FoundationModels.GeneratedContent, FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L212` | Overloads that require a typed GenerationID are not wrapped. |
-| `GeneratedContent.init(elements: S, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L215` | Overloads that require a typed GenerationID are not wrapped. |
-| `GeneratedContent.init(_ value: some ConvertibleToGeneratedContent, id: FoundationModels.GenerationID)` | Init | `FoundationModels.swiftinterface:L218` | Overloads that require a typed GenerationID are not wrapped. |
-| `GeneratedContent.init(kind: FoundationModels.GeneratedContent.Kind, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L250` | Overloads that require a typed GenerationID are not wrapped. |
-| `LanguageModelSession.GenerationError.Context` | Struct | `FoundationModels.swiftinterface:L424` | Structured generation-error context objects are collapsed into FMError strings/codes. |
-| `LanguageModelSession.GenerationError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L425` | Structured generation-error context objects are collapsed into FMError strings/codes. |
-| `LanguageModelSession.GenerationError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L426` | Structured generation-error context objects are collapsed into FMError strings/codes. |
-| `LanguageModelSession.GenerationError.Refusal` | Struct | `FoundationModels.swiftinterface:L431` | Typed refusal helper APIs are not exposed; Rust keeps only FMError::Refusal text. |
-| `LanguageModelSession.GenerationError.Refusal.init(transcriptEntries: [FoundationModels.Transcript.Entry])` | Init | `FoundationModels.swiftinterface:L432` | Typed refusal helper APIs are not exposed; Rust keeps only FMError::Refusal text. |
-| `LanguageModelSession.GenerationError.Refusal.explanation` | Var | `FoundationModels.swiftinterface:L433` | Typed refusal helper APIs are not exposed; Rust keeps only FMError::Refusal text. |
-| `LanguageModelSession.GenerationError.Refusal.explanationStream` | Var | `FoundationModels.swiftinterface:L436` | Typed refusal helper APIs are not exposed; Rust keeps only FMError::Refusal text. |
-| `LanguageModelSession.GenerationError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L455` | Localized recovery/failure metadata is not preserved across the FFI boundary. |
-| `LanguageModelSession.GenerationError.failureReason` | Var | `FoundationModels.swiftinterface:L460` | Localized recovery/failure metadata is not preserved across the FFI boundary. |
-| `LanguageModelSession.ToolCallError.tool` | Var | `FoundationModels.swiftinterface:L469` | ToolCallError is reduced to FMError::ToolCallFailed without typed tool/error accessors. |
-| `LanguageModelSession.ToolCallError.underlyingError` | Var | `FoundationModels.swiftinterface:L470` | ToolCallError is reduced to FMError::ToolCallFailed without typed tool/error accessors. |
-| `LanguageModelSession.ToolCallError.init(tool: any FoundationModels.Tool, underlyingError: any Swift.Error)` | Init | `FoundationModels.swiftinterface:L471` | ToolCallError is reduced to FMError::ToolCallFailed without typed tool/error accessors. |
-| `SystemLanguageModel.Adapter.isCompatible(_ assetPack: BackgroundAssets.AssetPack)` | Func | `FoundationModels.swiftinterface:L673` | Depends on BackgroundAssets.AssetPack; the crate does not expose BackgroundAssets bindings. |
-| `SystemLanguageModel.Adapter.AssetError.Context` | Struct | `FoundationModels.swiftinterface:L686` | Structured adapter-asset error context is reduced to FMError adapter variants. |
-| `SystemLanguageModel.Adapter.AssetError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L687` | Structured adapter-asset error context is reduced to FMError adapter variants. |
-| `SystemLanguageModel.Adapter.AssetError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L688` | Structured adapter-asset error context is reduced to FMError adapter variants. |
-| `SystemLanguageModel.Adapter.AssetError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L699` | Adapter recovery suggestions are not preserved across the FFI boundary. |
-| `GenerationID` | Struct | `FoundationModels.swiftinterface:L1308` | Opaque GenerationID handle is not exposed; Rust only surfaces best-effort string metadata. |
-| `GenerationID.init()` | Init | `FoundationModels.swiftinterface:L1309` | Opaque GenerationID handle is not exposed; Rust only surfaces best-effort string metadata. |
-| `GenerationSchema.SchemaError.Context` | Struct | `FoundationModels.swiftinterface:L1384` | Structured schema-validation context is reduced to FMError messages. |
-| `GenerationSchema.SchemaError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L1385` | Structured schema-validation context is reduced to FMError messages. |
-| `GenerationSchema.SchemaError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L1386` | Structured schema-validation context is reduced to FMError messages. |
-| `GenerationSchema.SchemaError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L1398` | Schema recovery suggestions are not preserved across the FFI boundary. |
+| `SystemLanguageModel.Adapter.isCompatible(_ assetPack: BackgroundAssets.AssetPack)` | Func | `FoundationModels.swiftinterface:L673` | Depends on `BackgroundAssets.AssetPack`; the crate does not expose `BackgroundAssets` bindings yet. |
+| `SystemLanguageModel.Adapter.AssetError.Context` | Struct | `FoundationModels.swiftinterface:L686` | Structured adapter-asset error context is still reduced to the current adapter `FMError` variants. |
+| `SystemLanguageModel.Adapter.AssetError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L687` | Structured adapter-asset error context is still reduced to the current adapter `FMError` variants. |
+| `SystemLanguageModel.Adapter.AssetError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L688` | Structured adapter-asset error context is still reduced to the current adapter `FMError` variants. |
+| `SystemLanguageModel.Adapter.AssetError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L699` | Adapter recovery suggestions are not yet preserved across the FFI boundary. |
 
 ## ⏭️ EXEMPT
 | Symbol | Kind | Header | Reason | SDK attribute |

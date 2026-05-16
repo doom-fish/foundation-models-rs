@@ -48,6 +48,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let response_format = ResponseFormat::generating::<Choice>()?;
     println!("response format name: {}", response_format.name());
 
+    let generation_id = GenerationId::new()?;
+    let decimal = Decimal::new("12.34");
+    let decimal_content = decimal
+        .to_generated_content()?
+        .with_generation_id(generation_id.clone());
+    println!(
+        "decimal round-trip: {}",
+        Decimal::from_generated_content(&decimal_content)?
+    );
+    println!(
+        "generation id: {}",
+        decimal_content
+            .generation_id()
+            .unwrap_or_else(|| generation_id.best_effort_string())
+    );
+
     let tool = Tool::generable(
         "echo_choice",
         "Echo the provided choice",

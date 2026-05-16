@@ -169,6 +169,41 @@ extern "C" {
         schema_json: *const c_char,
         error_out: *mut *mut c_char,
     ) -> i32;
+
+    pub fn fm_generation_id_create(
+        output_out: *mut *mut c_char,
+        error_out: *mut *mut c_char,
+    ) -> i32;
+    pub fn fm_decimal_to_generated_content_json(
+        decimal_string: *const c_char,
+        output_out: *mut *mut c_char,
+        error_out: *mut *mut c_char,
+    ) -> i32;
+    pub fn fm_decimal_from_generated_content_json(
+        generated_content_json: *const c_char,
+        output_out: *mut *mut c_char,
+        error_out: *mut *mut c_char,
+    ) -> i32;
+    pub fn fm_refusal_explanation_json(
+        refusal_token: *const c_char,
+        context: *mut c_void,
+        callback: FmRespondCallback,
+    );
+    pub fn fm_refusal_explanation_from_transcript_json(
+        transcript_json: *const c_char,
+        context: *mut c_void,
+        callback: FmRespondCallback,
+    );
+    pub fn fm_refusal_explanation_stream(
+        refusal_token: *const c_char,
+        context: *mut c_void,
+        callback: FmStreamCallback,
+    );
+    pub fn fm_refusal_explanation_stream_from_transcript_json(
+        transcript_json: *const c_char,
+        context: *mut c_void,
+        callback: FmStreamCallback,
+    );
 }
 
 /// Status codes mirrored 1:1 from the `FM_*` constants in Swift.

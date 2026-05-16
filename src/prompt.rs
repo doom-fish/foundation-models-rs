@@ -203,7 +203,10 @@ impl Segment {
             Self::Structure(segment) => json!({
                 "kind": "structure",
                 "source": segment.source,
-                "contentJSON": segment.content.json_string().expect("generated content must serialize")
+                "content": segment
+                    .content
+                    .to_bridge_value()
+                    .expect("generated content bridge payload must serialize")
             }),
         }
     }

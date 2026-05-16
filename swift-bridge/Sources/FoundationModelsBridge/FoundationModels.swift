@@ -355,52 +355,66 @@ public func fm_session_stream_response(
 #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
 @available(macOS 26.0, *)
 func mapError(_ error: Error) -> (Int32, String) {
+    func plainPayload(_ message: String) -> String {
+        encodeErrorPayload(BridgeErrorPayload(
+            message: message,
+            recoverySuggestion: nil,
+            failureReason: nil,
+            generationErrorContext: nil,
+            refusal: nil,
+            toolCallError: nil,
+            schemaErrorContext: nil
+        ))
+    }
+
     if let lmError = error as? LanguageModelSession.GenerationError {
-        let msg = lmError.localizedDescription
         switch lmError {
         case .guardrailViolation:
-            return (FM_GUARDRAIL_VIOLATION, msg)
+            return (FM_GUARDRAIL_VIOLATION, encodeErrorPayload(generationErrorPayload(lmError)))
         case .exceededContextWindowSize:
-            return (FM_CONTEXT_WINDOW_EXCEEDED, msg)
+            return (FM_CONTEXT_WINDOW_EXCEEDED, encodeErrorPayload(generationErrorPayload(lmError)))
         case .unsupportedLanguageOrLocale:
-            return (FM_UNSUPPORTED_LANGUAGE, msg)
+            return (FM_UNSUPPORTED_LANGUAGE, encodeErrorPayload(generationErrorPayload(lmError)))
         case .assetsUnavailable:
-            return (FM_ASSETS_UNAVAILABLE, msg)
+            return (FM_ASSETS_UNAVAILABLE, encodeErrorPayload(generationErrorPayload(lmError)))
         case .rateLimited:
-            return (FM_RATE_LIMITED, msg)
+            return (FM_RATE_LIMITED, encodeErrorPayload(generationErrorPayload(lmError)))
         case .decodingFailure:
-            return (FM_DECODING_FAILURE, msg)
+            return (FM_DECODING_FAILURE, encodeErrorPayload(generationErrorPayload(lmError)))
         case .refusal:
-            return (FM_REFUSAL, msg)
+            return (FM_REFUSAL, encodeErrorPayload(generationErrorPayload(lmError)))
         case .concurrentRequests:
-            return (FM_CONCURRENT_REQUESTS, msg)
+            return (FM_CONCURRENT_REQUESTS, encodeErrorPayload(generationErrorPayload(lmError)))
         case .unsupportedGuide:
-            return (FM_UNSUPPORTED_GUIDE, msg)
+            return (FM_UNSUPPORTED_GUIDE, encodeErrorPayload(generationErrorPayload(lmError)))
         @unknown default:
-            return (FM_UNKNOWN, msg)
+            return (FM_UNKNOWN, plainPayload(lmError.localizedDescription))
         }
     }
     if let toolCallError = error as? LanguageModelSession.ToolCallError {
-        return (FM_TOOL_CALL_FAILED, toolCallError.localizedDescription)
+        return (FM_TOOL_CALL_FAILED, encodeErrorPayload(toolCallErrorPayload(toolCallError)))
+    }
+    if let schemaError = error as? GenerationSchema.SchemaError {
+        return (FM_UNKNOWN, encodeErrorPayload(schemaErrorPayload(schemaError)))
     }
     if let adapterError = error as? SystemLanguageModel.Adapter.AssetError {
-        let msg = adapterError.localizedDescription
+        let message = adapterError.localizedDescription
         switch adapterError {
         case .invalidAsset:
-            return (FM_ADAPTER_INVALID_ASSET, msg)
+            return (FM_ADAPTER_INVALID_ASSET, plainPayload(message))
         case .invalidAdapterName:
-            return (FM_ADAPTER_INVALID_NAME, msg)
+            return (FM_ADAPTER_INVALID_NAME, plainPayload(message))
         case .compatibleAdapterNotFound:
-            return (FM_ADAPTER_COMPATIBLE_NOT_FOUND, msg)
+            return (FM_ADAPTER_COMPATIBLE_NOT_FOUND, plainPayload(message))
         @unknown default:
-            return (FM_UNKNOWN, msg)
+            return (FM_UNKNOWN, plainPayload(message))
         }
     }
     let nsError = error as NSError
     if nsError.code == NSUserCancelledError {
-        return (FM_CANCELLED, error.localizedDescription)
+        return (FM_CANCELLED, plainPayload(error.localizedDescription))
     }
-    return (FM_UNKNOWN, error.localizedDescription)
+    return (FM_UNKNOWN, plainPayload(error.localizedDescription))
 }
 #else
 func mapError(_ error: Error) -> (Int32, String) {
@@ -497,8 +511,8 @@ public func fm_session_respond_with_schema(
             }
             return
         } catch {
-            let cstr = ffiString("schema build failed: \(error.localizedDescription)")
-            callback(context, nil, cstr, FM_UNKNOWN)
+            let (code, message) = mapError(error)
+            callback(context, nil, ffiString(message), code)
             return
         }
     }

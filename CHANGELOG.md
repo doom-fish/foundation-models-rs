@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1]
+
+### Added
+
+- Typed generated-content helpers: `GenerationId`, string-backed `Decimal`, `GeneratedContentKind`, and `GeneratedContent` constructors/builders that preserve optional IDs.
+- Typed error metadata accessors: `GenerationErrorContext`, `SchemaErrorContext`, `Refusal`, `ToolCallError`, plus `FMError::{generation_error_context, schema_error_context, recovery_suggestion, failure_reason, refusal, tool_call_error}`.
+
+### Changed
+
+- Structured prompt/instructions/feedback/response bridge payloads now preserve generated-content IDs across the FFI boundary.
+- `COVERAGE_AUDIT.md` now closes the `GenerationID`, `Decimal`, refusal, tool-call, and schema/generation error metadata gaps (98.1% audited coverage; 5 adapter-related gaps remain).
+
+### Fixed
+
+- `build.rs` now links against the macOS SDK Swift runtime stubs so `cargo test` resolves `swiftCore` / `swift_Concurrency` symbols pulled in by the Swift bridge archive.
+
+### Notes
+
+- `BackgroundAssets.AssetPack` and the remaining adapter asset-error metadata surface are still the only audited gaps.
+
 ## [0.7.0]
 
 ### Added

@@ -7,7 +7,7 @@ use std::sync::mpsc;
 
 use serde_json::{json, Map, Value};
 
-use crate::content::{FromGeneratedContent, GeneratedContent, ToGeneratedContent};
+use crate::content::{FromGeneratedContent, ToGeneratedContent};
 use crate::error::FMError;
 use crate::ffi;
 
@@ -730,75 +730,6 @@ fn primitive_schema_json(
 pub trait Generable: Sized + FromGeneratedContent + ToGeneratedContent {
     /// Return the generation schema that describes `Self`.
     fn generation_schema() -> Result<GenerationSchema, FMError>;
-}
-
-impl Generable for GeneratedContent {
-    fn generation_schema() -> Result<GenerationSchema, FMError> {
-        Ok(GenerationSchema::generated_content())
-    }
-}
-
-impl Generable for String {
-    fn generation_schema() -> Result<GenerationSchema, FMError> {
-        Ok(GenerationSchema::string())
-    }
-}
-
-impl Generable for bool {
-    fn generation_schema() -> Result<GenerationSchema, FMError> {
-        Ok(GenerationSchema::boolean())
-    }
-}
-
-macro_rules! impl_integer_generable {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl Generable for $ty {
-                fn generation_schema() -> Result<GenerationSchema, FMError> {
-                    Ok(GenerationSchema::integer())
-                }
-            }
-        )+
-    };
-}
-
-macro_rules! impl_number_generable {
-    ($($ty:ty),+ $(,)?) => {
-        $(
-            impl Generable for $ty {
-                fn generation_schema() -> Result<GenerationSchema, FMError> {
-                    Ok(GenerationSchema::number())
-                }
-            }
-        )+
-    };
-}
-
-impl_integer_generable!(i8, i16, i32, i64, u8, u16, u32, u64);
-impl_number_generable!(f32, f64);
-
-impl<T> Generable for Vec<T>
-where
-    T: Generable,
-{
-    fn generation_schema() -> Result<GenerationSchema, FMError> {
-        let item_schema: Value = serde_json::from_str(T::generation_schema()?.json_schema())
-            .map_err(|error| {
-                FMError::InvalidArgument(format!("element schema is not valid JSON: {error}"))
-            })?;
-        Ok(GenerationSchema::from_json_schema_unchecked(
-            json!({ "type": "array", "items": item_schema }).to_string(),
-        ))
-    }
-}
-
-impl<T> Generable for Option<T>
-where
-    T: Generable,
-{
-    fn generation_schema() -> Result<GenerationSchema, FMError> {
-        T::generation_schema()
-    }
 }
 
 unsafe extern "C" fn schema_callback_trampoline(

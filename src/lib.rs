@@ -82,8 +82,13 @@ pub mod session;
 pub mod tool;
 pub mod transcript;
 
-pub use content::{FromGeneratedContent, GeneratedContent, ToGeneratedContent};
-pub use error::{FMError, Unavailability};
+pub use content::{
+    Decimal, FromGeneratedContent, GeneratedContent, GeneratedContentKind, GenerationId,
+    ToGeneratedContent,
+};
+pub use error::{
+    FMError, GenerationErrorContext, Refusal, SchemaErrorContext, ToolCallError, Unavailability,
+};
 pub use generation::{GenerationOptions, SamplingMode};
 pub use model::{
     Adapter, Availability, ConfiguredSystemLanguageModel, Guardrails, SystemLanguageModel, UseCase,
@@ -109,8 +114,13 @@ pub use transcript::{
 
 /// Common imports for users of this crate.
 pub mod prelude {
-    pub use crate::content::{FromGeneratedContent, GeneratedContent, ToGeneratedContent};
-    pub use crate::error::{FMError, Unavailability};
+    pub use crate::content::{
+        Decimal, FromGeneratedContent, GeneratedContent, GeneratedContentKind, GenerationId,
+        ToGeneratedContent,
+    };
+    pub use crate::error::{
+        FMError, GenerationErrorContext, Refusal, SchemaErrorContext, ToolCallError, Unavailability,
+    };
     pub use crate::generation::{GenerationOptions, SamplingMode};
     pub use crate::model::{
         Adapter, Availability, ConfiguredSystemLanguageModel, Guardrails, SystemLanguageModel,

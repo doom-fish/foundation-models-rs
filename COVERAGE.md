@@ -39,8 +39,13 @@ Audited against:
 | --- | --- | --- |
 | `PromptBuilder` / `InstructionsBuilder` | ⏭️ skipped | Swift-only function-builder syntax; Rust uses `Prompt`, `Instructions`, `ToPrompt`, and `ToInstructions`. |
 | `@Generable` / `@Guide` macros | ⏭️ skipped | Swift compile-time macros; Rust exposes runtime `Generable`, `GenerationGuide`, and `DynamicGenerationSchema` builders instead. |
+| `Foundation.Decimal` | ✅ implemented | Exposed as a string-backed `Decimal` with `Generable`, `FromGeneratedContent`, and `ToGeneratedContent` support. |
+| `LanguageModelSession.GenerationError.Context / Refusal / recoverySuggestion / failureReason` | ✅ implemented | Exposed via `GenerationErrorContext`, `Refusal`, and `FMError::{generation_error_context, recovery_suggestion, failure_reason, refusal}`. |
+| `LanguageModelSession.ToolCallError.tool / underlyingError` | ✅ implemented | Exposed via `ToolCallError` and `FMError::tool_call_error()`. |
+| `GenerationSchema.SchemaError.Context / recoverySuggestion` | ✅ implemented | Exposed via `SchemaErrorContext` and `FMError::{schema_error_context, recovery_suggestion}`. |
 | `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)` | ⏭️ skipped | Depends on `BackgroundAssets.AssetPack`, which this crate does not expose. |
-| `GenerationID` | 🟡 partial | Exposed as best-effort string metadata on `GeneratedContent::generation_id()` rather than an opaque Rust handle. |
+| `SystemLanguageModel.Adapter.AssetError.Context / recoverySuggestion` | 🟡 partial | Adapter errors still map to the current `FMError` adapter variants without typed context/recovery metadata. |
+| `GenerationID` | ✅ implemented | Exposed as `GenerationId`; `GeneratedContent::{generation_id_handle, with_generation_id}` preserve opaque IDs across the bridge. |
 
 ## Verification
 

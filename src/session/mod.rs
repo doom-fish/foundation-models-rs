@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::content::GeneratedContent;
+use crate::content::{BridgeGeneratedContent, GeneratedContent};
 use crate::error::FMError;
 use crate::ffi;
 use crate::generation::{GenerationOptions, SamplingMode};
@@ -428,11 +428,7 @@ impl LanguageModelSession {
             .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
         Ok(SessionResponse {
             content: response.content,
-            raw_content: GeneratedContent::from_bridge_json(
-                &response.raw_content_json,
-                true,
-                None,
-            )?,
+            raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
             transcript: Transcript::from_json_str(&response.transcript_json)?,
         })
     }
@@ -482,12 +478,8 @@ impl LanguageModelSession {
         let response: BridgeStructuredResponse = serde_json::from_str(&payload)
             .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
         Ok(SessionResponse {
-            content: GeneratedContent::from_bridge_json(&response.content_json, true, None)?,
-            raw_content: GeneratedContent::from_bridge_json(
-                &response.raw_content_json,
-                true,
-                None,
-            )?,
+            content: GeneratedContent::from_bridge_payload(response.content, true)?,
+            raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
             transcript: Transcript::from_json_str(&response.transcript_json)?,
         })
     }
@@ -877,16 +869,16 @@ impl FeedbackAttachmentRequest {
             .as_ref()
             .map(|entry| Transcript::from(vec![entry.clone()]).to_json_string())
             .transpose()?;
-        let desired_response_content_json = self
+        let desired_response_content = self
             .desired_response_content
             .as_ref()
-            .map(GeneratedContent::json_string)
+            .map(GeneratedContent::to_bridge_value)
             .transpose()?;
         serde_json::to_string(&json!({
             "sentiment": self.sentiment.map(FeedbackSentiment::as_str),
             "issues": issues,
             "desiredResponseText": self.desired_response_text,
-            "desiredResponseContentJSON": desired_response_content_json,
+            "desiredResponseContent": desired_response_content,
             "desiredOutputTranscriptJSON": desired_output_json,
         }))
         .map_err(|error| {
@@ -900,28 +892,26 @@ impl FeedbackAttachmentRequest {
 #[derive(Debug, Deserialize)]
 struct BridgeTextResponse {
     content: String,
-    #[serde(rename = "rawContentJSON")]
-    raw_content_json: String,
+    #[serde(rename = "rawContent")]
+    raw_content: BridgeGeneratedContent,
     #[serde(rename = "transcriptJSON")]
     transcript_json: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct BridgeStructuredResponse {
-    #[serde(rename = "contentJSON")]
-    content_json: String,
-    #[serde(rename = "rawContentJSON")]
-    raw_content_json: String,
+    content: BridgeGeneratedContent,
+    #[serde(rename = "rawContent")]
+    raw_content: BridgeGeneratedContent,
     #[serde(rename = "transcriptJSON")]
     transcript_json: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct BridgeStructuredSnapshot {
-    #[serde(rename = "contentJSON")]
-    content_json: String,
-    #[serde(rename = "rawContentJSON")]
-    raw_content_json: String,
+    content: BridgeGeneratedContent,
+    #[serde(rename = "rawContent")]
+    raw_content: BridgeGeneratedContent,
     #[serde(rename = "isComplete")]
     is_complete: bool,
 }
@@ -979,6 +969,51 @@ fn request_response(session: *mut c_void, payload: &CString) -> Result<String, F
     rx.recv().map_err(|_| FMError::Unknown {
         code: ffi::status::UNKNOWN,
         message: "Swift bridge dropped the JSON response channel".into(),
+    })?
+}
+
+pub(crate) fn decode_bridge_text_response(
+    payload: &str,
+) -> Result<SessionResponse<String>, FMError> {
+    let response: BridgeTextResponse = serde_json::from_str(payload)
+        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+    Ok(SessionResponse {
+        content: response.content,
+        raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
+        transcript: Transcript::from_json_str(&response.transcript_json)?,
+    })
+}
+
+pub(crate) fn request_text_response_with<F>(invoke: F) -> Result<SessionResponse<String>, FMError>
+where
+    F: FnOnce(*mut c_void, ffi::FmRespondCallback),
+{
+    let (tx, rx) = mpsc::channel();
+    let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
+    let context = Box::into_raw(tx_box).cast::<c_void>();
+    invoke(context, respond_trampoline);
+    let payload = rx.recv().map_err(|_| FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message: "Swift bridge dropped the JSON response channel".into(),
+    })??;
+    decode_bridge_text_response(&payload)
+}
+
+pub(crate) fn run_text_stream_with<F, C>(invoke: F, on_chunk: C) -> Result<(), FMError>
+where
+    F: FnOnce(*mut c_void, ffi::FmStreamCallback),
+    C: FnMut(StreamEvent<'_>) + Send + 'static,
+{
+    let (done_tx, done_rx) = mpsc::channel::<Result<(), FMError>>();
+    let state = Arc::new(StreamState {
+        on_chunk: Mutex::new(Box::new(on_chunk)),
+        done_tx: Mutex::new(Some(done_tx)),
+    });
+    let context = Arc::into_raw(state).cast::<c_void>().cast_mut();
+    invoke(context, json_text_stream_trampoline);
+    done_rx.recv().map_err(|_| FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message: "Swift bridge dropped the stream channel".into(),
     })?
 }
 
@@ -1221,8 +1256,8 @@ unsafe extern "C" fn structured_stream_trampoline(
             .lock()
             .expect("structured callback mutex poisoned");
         callback(StructuredStreamEvent::Snapshot(StructuredStreamSnapshot {
-            content_json: snapshot.content_json,
-            raw_content_json: snapshot.raw_content_json,
+            content_json: snapshot.content.json,
+            raw_content_json: snapshot.raw_content.json,
             is_complete: snapshot.is_complete,
         }));
     }

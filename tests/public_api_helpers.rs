@@ -102,3 +102,35 @@ fn array_guides_compile_via_swift_bridge() -> Result<(), FMError> {
     );
     Ok(())
 }
+
+#[cfg(feature = "macos_26_0")]
+#[test]
+fn generation_id_attaches_to_generated_content() -> Result<(), FMError> {
+    let generation_id = GenerationId::new()?;
+    let content = GeneratedContent::from_kind_with_id(
+        GeneratedContentKind::String("hello".into()),
+        generation_id.clone(),
+    )?;
+
+    assert_eq!(content.kind(), GeneratedContentKind::String("hello".into()));
+    assert_eq!(content.generation_id_handle(), Some(&generation_id));
+    assert_eq!(
+        content.generation_id(),
+        Some(generation_id.best_effort_string())
+    );
+    Ok(())
+}
+
+#[cfg(feature = "macos_26_0")]
+#[test]
+fn decimal_round_trips_through_generated_content() -> Result<(), FMError> {
+    let decimal = Decimal::new("12.34");
+    let content = decimal.to_generated_content()?;
+    let decoded = Decimal::from_generated_content(&content)?;
+
+    assert_eq!(decoded, decimal);
+    assert!(Decimal::generation_schema()?
+        .json_schema()
+        .contains("number"));
+    Ok(())
+}

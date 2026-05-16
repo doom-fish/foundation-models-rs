@@ -24,6 +24,17 @@ fn detect_sdk_major_version() -> Option<u32> {
     major.parse().ok()
 }
 
+fn detect_sdk_root() -> Option<String> {
+    let output = Command::new("xcrun")
+        .args(["--sdk", "macosx", "--show-sdk-path"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Resolve which `-D<MACRO>` flags to pass to the Swift compiler for each
 /// enabled `macos_*` Cargo feature.
 fn configure_swift_version_defines(sdk_version: Option<u32>) -> Vec<String> {
@@ -171,13 +182,22 @@ fn link_swift_bridge(swift_build_dir: &str) {
     // Add rpath for Swift runtime libraries
     println!("cargo:rustc-link-arg=-Wl,-rpath,/usr/lib/swift");
 
-    // Add rpath for Xcode Swift runtime (needed for Swift Concurrency)
+    // Add rpath + link search paths for the Xcode Swift runtime. Static Swift
+    // package archives carry autolink metadata for `swiftCore` /
+    // `swift_Concurrency`, but `rustc` does not add the Xcode runtime search
+    // paths automatically.
     match Command::new("xcode-select").arg("-p").output() {
         Ok(output) if output.status.success() => {
             let xcode_path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            let swift_lib_path =
-                format!("{xcode_path}/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/macosx");
-            println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_lib_path}");
+            let swift_root = format!("{xcode_path}/Toolchains/XcodeDefault.xctoolchain/usr/lib");
+            let swift_rpath = format!("{swift_root}/swift/macosx");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{swift_rpath}");
+            println!("cargo:rustc-link-search=native={swift_rpath}");
+            if let Some(sdk_root) = detect_sdk_root() {
+                println!("cargo:rustc-link-search=native={sdk_root}/usr/lib/swift");
+            }
+            println!("cargo:rustc-link-lib=swiftCore");
+            println!("cargo:rustc-link-lib=swift_Concurrency");
         }
         Ok(output) => {
             println!(

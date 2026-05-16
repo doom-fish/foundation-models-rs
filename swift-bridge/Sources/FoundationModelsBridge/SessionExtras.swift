@@ -144,8 +144,8 @@ public func fm_session_respond_request_json(
                     )
                     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
                     let payload = BridgeStructuredResponse(
-                        contentJSON: response.content.jsonString,
-                        rawContentJSON: response.rawContent.jsonString,
+                        content: bridgeGeneratedContent(response.content),
+                        rawContent: bridgeGeneratedContent(response.rawContent),
                         transcriptJSON: transcriptJSON
                     )
                     callback(context, ffiString(try encodeBridge(payload)), nil, FM_OK)
@@ -154,7 +154,7 @@ public func fm_session_respond_request_json(
                     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
                     let payload = BridgeTextResponse(
                         content: response.content,
-                        rawContentJSON: response.rawContent.jsonString,
+                        rawContent: bridgeGeneratedContent(response.rawContent),
                         transcriptJSON: transcriptJSON
                     )
                     callback(context, ffiString(try encodeBridge(payload)), nil, FM_OK)
@@ -201,8 +201,8 @@ public func fm_session_stream_request_json(
                     )
                     for try await snapshot in stream {
                         let payload = BridgeStructuredStreamSnapshot(
-                            contentJSON: snapshot.content.jsonString,
-                            rawContentJSON: snapshot.rawContent.jsonString,
+                            content: bridgeGeneratedContent(snapshot.content),
+                            rawContent: bridgeGeneratedContent(snapshot.rawContent),
                             isComplete: snapshot.content.isComplete
                         )
                         callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
@@ -222,7 +222,7 @@ public func fm_session_stream_request_json(
                         let payload = BridgeTextStreamSnapshot(
                             delta: delta,
                             content: full,
-                            rawContentJSON: snapshot.rawContent.jsonString
+                            rawContent: bridgeGeneratedContent(snapshot.rawContent)
                         )
                         callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
                     }
@@ -271,11 +271,11 @@ public func fm_session_log_feedback_attachment_json(
                     issues: issues,
                     desiredResponseText: desiredResponseText
                 )
-            } else if let desiredResponseContentJSON = request.desiredResponseContentJSON {
+            } else if let desiredResponseContent = request.desiredResponseContent {
                 data = session.logFeedbackAttachment(
                     sentiment: sentiment,
                     issues: issues,
-                    desiredResponseContent: try GeneratedContent(json: desiredResponseContentJSON)
+                    desiredResponseContent: try buildGeneratedContent(from: desiredResponseContent)
                 )
             } else {
                 data = session.logFeedbackAttachment(

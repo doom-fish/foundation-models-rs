@@ -4,6 +4,20 @@ import Foundation
 import FoundationModels
 #endif
 
+struct BridgeGenerationID: Codable {
+    var token: String
+    var description: String
+}
+
+struct BridgeGeneratedContent: Codable {
+    var json: String
+    var generationID: BridgeGenerationID?
+}
+
+struct BridgeRefusal: Codable {
+    var token: String
+}
+
 struct BridgeSegment: Codable {
     enum Kind: String, Codable {
         case text
@@ -13,7 +27,7 @@ struct BridgeSegment: Codable {
     var kind: Kind
     var text: String?
     var source: String?
-    var contentJSON: String?
+    var content: BridgeGeneratedContent?
 }
 
 struct BridgePrompt: Codable {
@@ -45,14 +59,14 @@ struct BridgeResponseRequest: Codable {
 struct BridgeTextResponse: Encodable {
     let kind: String = "text"
     let content: String
-    let rawContentJSON: String
+    let rawContent: BridgeGeneratedContent
     let transcriptJSON: String
 }
 
 struct BridgeStructuredResponse: Encodable {
     let kind: String = "generated_content"
-    let contentJSON: String
-    let rawContentJSON: String
+    let content: BridgeGeneratedContent
+    let rawContent: BridgeGeneratedContent
     let transcriptJSON: String
 }
 
@@ -60,13 +74,13 @@ struct BridgeTextStreamSnapshot: Encodable {
     let kind: String = "text"
     let delta: String
     let content: String
-    let rawContentJSON: String
+    let rawContent: BridgeGeneratedContent
 }
 
 struct BridgeStructuredStreamSnapshot: Encodable {
     let kind: String = "generated_content"
-    let contentJSON: String
-    let rawContentJSON: String
+    let content: BridgeGeneratedContent
+    let rawContent: BridgeGeneratedContent
     let isComplete: Bool
 }
 
@@ -75,6 +89,31 @@ struct BridgeToolSpec: Codable {
     var description: String
     var parametersJSON: String
     var includesSchemaInInstructions: Bool
+}
+
+struct BridgeToolDefinition: Codable {
+    var name: String
+    var description: String
+    var parametersJSON: String
+}
+
+struct BridgeToolCallErrorPayload: Codable {
+    var tool: BridgeToolDefinition
+    var underlyingError: String
+}
+
+struct BridgeErrorContext: Codable {
+    var debugDescription: String
+}
+
+struct BridgeErrorPayload: Codable {
+    var message: String
+    var recoverySuggestion: String?
+    var failureReason: String?
+    var generationErrorContext: BridgeErrorContext?
+    var refusal: BridgeRefusal?
+    var toolCallError: BridgeToolCallErrorPayload?
+    var schemaErrorContext: BridgeErrorContext?
 }
 
 struct BridgeToolOutput: Codable {
@@ -90,11 +129,56 @@ struct BridgeFeedbackRequest: Codable {
     var sentiment: String?
     var issues: [BridgeFeedbackIssue]
     var desiredResponseText: String?
-    var desiredResponseContentJSON: String?
+    var desiredResponseContent: BridgeGeneratedContent?
     var desiredOutputTranscriptJSON: String?
 }
 
 #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+@available(macOS 26.0, *)
+final class GenerationIDRegistry {
+    static let shared = GenerationIDRegistry()
+
+    private let lock = NSLock()
+    private var generationIDs: [String: GenerationID] = [:]
+
+    func register(_ generationID: GenerationID) -> BridgeGenerationID {
+        lock.lock()
+        defer { lock.unlock() }
+        let token = UUID().uuidString
+        generationIDs[token] = generationID
+        return BridgeGenerationID(token: token, description: String(describing: generationID))
+    }
+
+    func resolve(_ bridgeGenerationID: BridgeGenerationID?) -> GenerationID? {
+        guard let bridgeGenerationID else { return nil }
+        lock.lock()
+        defer { lock.unlock() }
+        return generationIDs[bridgeGenerationID.token]
+    }
+}
+
+@available(macOS 26.0, *)
+final class RefusalRegistry {
+    static let shared = RefusalRegistry()
+
+    private let lock = NSLock()
+    private var refusals: [String: LanguageModelSession.GenerationError.Refusal] = [:]
+
+    func register(_ refusal: LanguageModelSession.GenerationError.Refusal) -> BridgeRefusal {
+        lock.lock()
+        defer { lock.unlock() }
+        let token = UUID().uuidString
+        refusals[token] = refusal
+        return BridgeRefusal(token: token)
+    }
+
+    func resolve(_ bridgeRefusal: BridgeRefusal) -> LanguageModelSession.GenerationError.Refusal? {
+        lock.lock()
+        defer { lock.unlock() }
+        return refusals[bridgeRefusal.token]
+    }
+}
+
 @available(macOS 26.0, *)
 func decodeBridge<T: Decodable>(_ json: String, as type: T.Type = T.self) throws -> T {
     guard let data = json.data(using: .utf8) else {
@@ -118,19 +202,59 @@ func encodeBridge<T: Encodable>(_ value: T) throws -> String {
 }
 
 @available(macOS 26.0, *)
+func encodeErrorPayload(_ payload: BridgeErrorPayload) -> String {
+    (try? encodeBridge(payload)) ?? payload.message
+}
+
+@available(macOS 26.0, *)
+func bridgeGenerationID(from generationID: GenerationID?) -> BridgeGenerationID? {
+    generationID.map(GenerationIDRegistry.shared.register)
+}
+
+@available(macOS 26.0, *)
+func bridgeGeneratedContent(_ content: GeneratedContent) -> BridgeGeneratedContent {
+    BridgeGeneratedContent(
+        json: content.jsonString,
+        generationID: bridgeGenerationID(from: content.id)
+    )
+}
+
+@available(macOS 26.0, *)
+func buildGeneratedContent(from bridge: BridgeGeneratedContent) throws -> GeneratedContent {
+    let content = try GeneratedContent(json: bridge.json)
+    if let generationID = GenerationIDRegistry.shared.resolve(bridge.generationID) {
+        return GeneratedContent(content, id: generationID)
+    }
+    return content
+}
+
+@available(macOS 26.0, *)
+func bridgeRefusal(_ refusal: LanguageModelSession.GenerationError.Refusal) -> BridgeRefusal {
+    RefusalRegistry.shared.register(refusal)
+}
+
+@available(macOS 26.0, *)
+func bridgeToolDefinition(from tool: any Tool) -> BridgeToolDefinition {
+    BridgeToolDefinition(
+        name: tool.name,
+        description: tool.description,
+        parametersJSON: (try? encodeBridge(tool.parameters)) ?? "{}"
+    )
+}
+
+@available(macOS 26.0, *)
 func buildPrompt(from bridge: BridgePrompt) throws -> Prompt {
     let parts = try bridge.segments.map { segment -> Prompt in
         switch segment.kind {
         case .text:
             return Prompt(segment.text ?? "")
         case .structure:
-            guard let contentJSON = segment.contentJSON else {
+            guard let content = segment.content else {
                 throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
-                    NSLocalizedDescriptionKey: "structured prompt segment is missing contentJSON"
+                    NSLocalizedDescriptionKey: "structured prompt segment is missing content"
                 ])
             }
-            let content = try GeneratedContent(json: contentJSON)
-            return Prompt(content)
+            return Prompt(try buildGeneratedContent(from: content))
         }
     }
     return parts.isEmpty ? Prompt("") : Prompt(parts)
@@ -143,13 +267,12 @@ func buildInstructions(from bridge: BridgeInstructions) throws -> Instructions {
         case .text:
             return Instructions(segment.text ?? "")
         case .structure:
-            guard let contentJSON = segment.contentJSON else {
+            guard let content = segment.content else {
                 throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
-                    NSLocalizedDescriptionKey: "structured instructions segment is missing contentJSON"
+                    NSLocalizedDescriptionKey: "structured instructions segment is missing content"
                 ])
             }
-            let content = try GeneratedContent(json: contentJSON)
-            return Instructions(content)
+            return Instructions(try buildGeneratedContent(from: content))
         }
     }
     return parts.isEmpty ? Instructions("") : Instructions(parts)
