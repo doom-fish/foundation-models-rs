@@ -64,6 +64,13 @@ extern "C" {
         context: *mut c_void,
         callback: FmStreamCallback,
     );
+
+    /// Pre-warm the model. Apple loads weights + initialises the
+    /// inference engine so the next `respond` call is faster.
+    pub fn fm_session_prewarm(session: *mut c_void);
+
+    /// Returns `true` if `session` is currently producing a response.
+    pub fn fm_session_is_responding(session: *mut c_void) -> bool;
 }
 
 /// Status codes mirrored 1:1 from the `FM_*` constants in

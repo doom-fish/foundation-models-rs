@@ -91,6 +91,20 @@ impl LanguageModelSession {
         self.respond_with(prompt, GenerationOptions::new())
     }
 
+    /// Pre-warm the model. Apple loads the weights + initialises the
+    /// inference engine so the next `respond` call is faster. Returns
+    /// immediately; the warm-up runs in the background.
+    pub fn prewarm(&self) {
+        unsafe { ffi::fm_session_prewarm(self.ptr) };
+    }
+
+    /// True if this session is currently producing a response (i.e. an
+    /// earlier `respond` / `stream` is still in flight on Apple's queue).
+    #[must_use]
+    pub fn is_responding(&self) -> bool {
+        unsafe { ffi::fm_session_is_responding(self.ptr) }
+    }
+
     /// Like [`respond`](Self::respond), but with explicit generation options.
     ///
     /// # Errors

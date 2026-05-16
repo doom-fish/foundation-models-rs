@@ -136,6 +136,32 @@ public func fm_session_create(_ instructions: UnsafePointer<CChar>?) -> UnsafeMu
     #endif
 }
 
+/// Pre-warm the model so the next call is faster. Apple loads the model
+/// weights + initialises the inference engine. Optionally accepts a
+/// short hint prompt to bias the cache. Returns immediately.
+@_cdecl("fm_session_prewarm")
+public func fm_session_prewarm(_ sessionPtr: UnsafeMutableRawPointer) {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        session.prewarm()
+    }
+    #endif
+}
+
+/// Query whether the session is currently producing a response (i.e. a
+/// previous `respond` or `streamResponse` is still in flight).
+@_cdecl("fm_session_is_responding")
+public func fm_session_is_responding(_ sessionPtr: UnsafeMutableRawPointer) -> Bool {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        return session.isResponding
+    }
+    #endif
+    return false
+}
+
 // MARK: - Generation Options
 //
 // Options are passed as individual scalar parameters rather than a struct
