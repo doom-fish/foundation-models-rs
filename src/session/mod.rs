@@ -6,9 +6,18 @@ use std::ffi::CString;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use serde::Deserialize;
+use serde_json::json;
+
+use crate::content::GeneratedContent;
 use crate::error::FMError;
 use crate::ffi;
-use crate::generation::GenerationOptions;
+use crate::generation::{GenerationOptions, SamplingMode};
+use crate::model::ConfiguredSystemLanguageModel;
+use crate::prompt::{Instructions, Prompt, ToInstructions, ToPrompt};
+use crate::schema::GenerationSchema;
+use crate::tool::{tool_callback_trampoline, Tool, ToolRegistry};
+use crate::transcript::Transcript;
 
 /// A stateful conversation with the on-device language model.
 ///
@@ -29,6 +38,7 @@ use crate::generation::GenerationOptions;
 /// ```
 pub struct LanguageModelSession {
     ptr: *mut c_void,
+    _tool_registry: Option<Arc<ToolRegistry>>,
 }
 
 // SAFETY: The underlying Swift LanguageModelSession is reference-counted via
@@ -77,7 +87,10 @@ impl LanguageModelSession {
         if ptr.is_null() {
             return None;
         }
-        Some(Self { ptr })
+        Some(Self {
+            ptr,
+            _tool_registry: None,
+        })
     }
 
     /// Send a prompt and block until the full response is available.
@@ -168,33 +181,7 @@ impl LanguageModelSession {
         prompt: &str,
         options: GenerationOptions,
     ) -> Result<String, FMError> {
-        let prompt_c = CString::new(prompt)
-            .map_err(|e| FMError::InvalidArgument(format!("prompt contains NUL byte: {e}")))?;
-        let opts = options.to_ffi();
-        let (tx, rx) = mpsc::channel();
-        let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
-        let context = Box::into_raw(tx_box).cast::<c_void>();
-
-        unsafe {
-            ffi::fm_session_respond(
-                self.ptr,
-                prompt_c.as_ptr(),
-                opts.temperature,
-                opts.maximum_response_tokens,
-                opts.sampling_mode,
-                opts.top_k,
-                opts.top_p,
-                context,
-                respond_trampoline,
-            );
-        }
-
-        // The Swift side dispatches the callback on its own Task executor;
-        // it is guaranteed to fire exactly once.
-        rx.recv().map_err(|_| FMError::Unknown {
-            code: ffi::status::UNKNOWN,
-            message: "Swift bridge dropped the callback channel".into(),
-        })?
+        self.respond_prompt_with(prompt, options)
     }
 
     /// Schema-driven structured response.
@@ -235,7 +222,12 @@ impl LanguageModelSession {
         schema: &str,
         include_schema_in_prompt: bool,
     ) -> Result<String, FMError> {
-        self.respond_with_schema_options(prompt, schema, include_schema_in_prompt, GenerationOptions::new())
+        self.respond_with_schema_options(
+            prompt,
+            schema,
+            include_schema_in_prompt,
+            GenerationOptions::new(),
+        )
     }
 
     /// [`respond_with_schema`](Self::respond_with_schema) with
@@ -313,13 +305,8 @@ impl LanguageModelSession {
     where
         F: FnMut(StreamEvent<'_>) + Send + 'static,
     {
-        let prompt_c = CString::new(prompt)
-            .map_err(|e| FMError::InvalidArgument(format!("prompt contains NUL byte: {e}")))?;
-        let opts = options.to_ffi();
+        let payload = respond_request_json(&Prompt::from(prompt), options, None, true)?;
 
-        // The callback may be invoked many times before completion. We pair
-        // the user closure with a oneshot channel that signals "stream
-        // finished" so this function can block until the Swift Task ends.
         let (done_tx, done_rx) = mpsc::channel::<Result<(), FMError>>();
         let state = Arc::new(StreamState {
             on_chunk: Mutex::new(Box::new(on_chunk)),
@@ -328,24 +315,682 @@ impl LanguageModelSession {
         let context = Arc::into_raw(state).cast::<c_void>().cast_mut();
 
         unsafe {
-            ffi::fm_session_stream_response(
+            ffi::fm_session_stream_request_json(
                 self.ptr,
-                prompt_c.as_ptr(),
-                opts.temperature,
-                opts.maximum_response_tokens,
-                opts.sampling_mode,
-                opts.top_k,
-                opts.top_p,
+                payload.as_ptr(),
                 context,
-                stream_trampoline,
-            );
-        }
+                json_text_stream_trampoline,
+            )
+        };
 
         done_rx.recv().map_err(|_| FMError::Unknown {
             code: ffi::status::UNKNOWN,
             message: "Swift bridge dropped the stream channel".into(),
         })?
     }
+}
+
+impl LanguageModelSession {
+    /// Create a configurable session builder.
+    #[must_use]
+    pub fn builder<'a>() -> SessionBuilder<'a> {
+        SessionBuilder::new()
+    }
+
+    /// Restore a session from a transcript.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the transcript cannot be encoded for Swift.
+    pub fn from_transcript(transcript: Transcript) -> Result<Self, FMError> {
+        Self::builder().transcript(transcript).build()
+    }
+
+    /// Return the typed transcript for this session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the transcript JSON returned by Swift could not
+    /// be decoded.
+    pub fn transcript(&self) -> Result<Transcript, FMError> {
+        Transcript::from_json_str(&self.transcript_json())
+    }
+
+    /// Pre-warm the model using a prompt prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the prompt cannot be encoded for Swift.
+    pub fn prewarm_with_prompt<P>(&self, prompt: P) -> Result<(), FMError>
+    where
+        P: ToPrompt,
+    {
+        let prompt = prompt.to_prompt()?;
+        let prompt_json = CString::new(prompt.to_bridge_json()?).map_err(|error| {
+            FMError::InvalidArgument(format!("prompt JSON contains a NUL byte: {error}"))
+        })?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let status = unsafe {
+            ffi::fm_session_prewarm_prompt_json(self.ptr, prompt_json.as_ptr(), &mut error)
+        };
+        if status != ffi::status::OK {
+            return Err(crate::error::from_swift(status, error));
+        }
+        Ok(())
+    }
+
+    /// Respond to a structured prompt and return only the generated text.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if generation fails.
+    pub fn respond_prompt<P>(&self, prompt: P) -> Result<String, FMError>
+    where
+        P: ToPrompt,
+    {
+        self.respond_prompt_with(prompt, GenerationOptions::new())
+    }
+
+    /// Like [`respond_prompt`](Self::respond_prompt), but with explicit options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if generation fails.
+    pub fn respond_prompt_with<P>(
+        &self,
+        prompt: P,
+        options: GenerationOptions,
+    ) -> Result<String, FMError>
+    where
+        P: ToPrompt,
+    {
+        self.respond_prompt_detailed(prompt, options)
+            .map(|response| response.content)
+    }
+
+    /// Respond to a structured prompt and keep the full response metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if generation fails.
+    pub fn respond_prompt_detailed<P>(
+        &self,
+        prompt: P,
+        options: GenerationOptions,
+    ) -> Result<SessionResponse<String>, FMError>
+    where
+        P: ToPrompt,
+    {
+        let prompt = prompt.to_prompt()?;
+        let payload = respond_request_json(&prompt, options, None, true)?;
+        let payload = request_response(self.ptr, &payload)?;
+        let response: BridgeTextResponse = serde_json::from_str(&payload)
+            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        Ok(SessionResponse {
+            content: response.content,
+            raw_content: GeneratedContent::from_bridge_json(
+                &response.raw_content_json,
+                true,
+                None,
+            )?,
+            transcript: Transcript::from_json_str(&response.transcript_json)?,
+        })
+    }
+
+    /// Generate structured content using an explicit schema.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if generation fails or the schema is invalid.
+    pub fn respond_generated<P>(
+        &self,
+        prompt: P,
+        schema: &GenerationSchema,
+        include_schema_in_prompt: bool,
+    ) -> Result<GeneratedContent, FMError>
+    where
+        P: ToPrompt,
+    {
+        self.respond_generated_with(
+            prompt,
+            schema,
+            include_schema_in_prompt,
+            GenerationOptions::new(),
+        )
+        .map(|response| response.content)
+    }
+
+    /// Like [`respond_generated`](Self::respond_generated), but with explicit options.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if generation fails or the schema is invalid.
+    pub fn respond_generated_with<P>(
+        &self,
+        prompt: P,
+        schema: &GenerationSchema,
+        include_schema_in_prompt: bool,
+        options: GenerationOptions,
+    ) -> Result<SessionResponse<GeneratedContent>, FMError>
+    where
+        P: ToPrompt,
+    {
+        let prompt = prompt.to_prompt()?;
+        let payload =
+            respond_request_json(&prompt, options, Some(schema), include_schema_in_prompt)?;
+        let payload = request_response(self.ptr, &payload)?;
+        let response: BridgeStructuredResponse = serde_json::from_str(&payload)
+            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        Ok(SessionResponse {
+            content: GeneratedContent::from_bridge_json(&response.content_json, true, None)?,
+            raw_content: GeneratedContent::from_bridge_json(
+                &response.raw_content_json,
+                true,
+                None,
+            )?,
+            transcript: Transcript::from_json_str(&response.transcript_json)?,
+        })
+    }
+
+    /// Generate a typed Rust value using a [`crate::schema::Generable`] implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if generation fails or the generated JSON cannot
+    /// be decoded as `T`.
+    pub fn respond_generating<P, T>(
+        &self,
+        prompt: P,
+        include_schema_in_prompt: bool,
+        options: GenerationOptions,
+    ) -> Result<SessionResponse<T>, FMError>
+    where
+        P: ToPrompt,
+        T: crate::schema::Generable,
+    {
+        let response = self.respond_generated_with(
+            prompt,
+            &T::generation_schema()?,
+            include_schema_in_prompt,
+            options,
+        )?;
+        Ok(SessionResponse {
+            content: T::from_generated_content(&response.content)?,
+            raw_content: response.raw_content,
+            transcript: response.transcript,
+        })
+    }
+
+    /// Stream a structured prompt token-by-token.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the prompt cannot be encoded or generation fails.
+    pub fn stream_prompt<P, F>(&self, prompt: P, on_chunk: F) -> Result<(), FMError>
+    where
+        P: ToPrompt,
+        F: FnMut(StreamEvent<'_>) + Send + 'static,
+    {
+        let prompt = prompt.to_prompt()?;
+        let prompt_text = prompt_to_plain_text(&prompt).ok_or_else(|| {
+            FMError::InvalidArgument(
+                "text streaming only supports prompts composed of text segments".into(),
+            )
+        })?;
+        self.stream_with(&prompt_text, GenerationOptions::new(), on_chunk)
+    }
+
+    /// Stream structured generation snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the prompt cannot be encoded or generation fails.
+    pub fn stream_generated<P, F>(
+        &self,
+        prompt: P,
+        schema: &GenerationSchema,
+        include_schema_in_prompt: bool,
+        options: GenerationOptions,
+        on_event: F,
+    ) -> Result<(), FMError>
+    where
+        P: ToPrompt,
+        F: FnMut(StructuredStreamEvent) + Send + 'static,
+    {
+        let prompt = prompt.to_prompt()?;
+        let payload =
+            respond_request_json(&prompt, options, Some(schema), include_schema_in_prompt)?;
+        let (done_tx, done_rx) = mpsc::channel::<Result<(), FMError>>();
+        let state = Arc::new(StructuredStreamState {
+            on_event: Mutex::new(Box::new(on_event)),
+            done_tx: Mutex::new(Some(done_tx)),
+        });
+        let context = Arc::into_raw(state).cast::<c_void>().cast_mut();
+        unsafe {
+            ffi::fm_session_stream_request_json(
+                self.ptr,
+                payload.as_ptr(),
+                context,
+                structured_stream_trampoline,
+            )
+        };
+        done_rx.recv().map_err(|_| FMError::Unknown {
+            code: ffi::status::UNKNOWN,
+            message: "Swift bridge dropped the structured stream channel".into(),
+        })?
+    }
+
+    /// Log a feedback attachment and return the raw bytes Apple produced.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the attachment request is invalid.
+    pub fn log_feedback_attachment(
+        &self,
+        request: FeedbackAttachmentRequest,
+    ) -> Result<Vec<u8>, FMError> {
+        let request_json = CString::new(request.to_bridge_json()?).map_err(|error| {
+            FMError::InvalidArgument(format!("feedback request contains a NUL byte: {error}"))
+        })?;
+        let mut length = 0usize;
+        let mut error: *mut c_char = ptr::null_mut();
+        let ptr = unsafe {
+            ffi::fm_session_log_feedback_attachment_json(
+                self.ptr,
+                request_json.as_ptr(),
+                &mut length,
+                &mut error,
+            )
+        };
+        if ptr.is_null() && !error.is_null() {
+            return Err(crate::error::from_swift(
+                ffi::status::INVALID_ARGUMENT,
+                error,
+            ));
+        }
+        if ptr.is_null() || length == 0 {
+            return Ok(Vec::new());
+        }
+        let bytes = unsafe { std::slice::from_raw_parts(ptr.cast::<u8>(), length) }.to_vec();
+        unsafe { ffi::fm_bytes_free(ptr) };
+        Ok(bytes)
+    }
+}
+
+/// Builder for [`LanguageModelSession`].
+pub struct SessionBuilder<'a> {
+    model: Option<&'a ConfiguredSystemLanguageModel>,
+    instructions: Option<Instructions>,
+    transcript: Option<Transcript>,
+    tools: Vec<Tool>,
+}
+
+impl<'a> SessionBuilder<'a> {
+    const fn new() -> Self {
+        Self {
+            model: None,
+            instructions: None,
+            transcript: None,
+            tools: Vec::new(),
+        }
+    }
+
+    /// Use a configured system model.
+    #[must_use]
+    pub const fn model(mut self, model: &'a ConfiguredSystemLanguageModel) -> Self {
+        self.model = Some(model);
+        self
+    }
+
+    /// Set system instructions.
+    pub fn instructions<I>(mut self, instructions: I) -> Result<Self, FMError>
+    where
+        I: ToInstructions,
+    {
+        self.instructions = Some(instructions.to_instructions()?);
+        Ok(self)
+    }
+
+    /// Restore the session from a transcript.
+    #[must_use]
+    pub fn transcript(mut self, transcript: Transcript) -> Self {
+        self.transcript = Some(transcript);
+        self
+    }
+
+    /// Add one tool.
+    #[must_use]
+    pub fn tool(mut self, tool: Tool) -> Self {
+        self.tools.push(tool);
+        self
+    }
+
+    /// Add many tools.
+    #[must_use]
+    pub fn tools(mut self, tools: impl IntoIterator<Item = Tool>) -> Self {
+        self.tools.extend(tools);
+        self
+    }
+
+    /// Build the session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the configuration cannot be encoded for Swift.
+    pub fn build(self) -> Result<LanguageModelSession, FMError> {
+        if self.instructions.is_some() && self.transcript.is_some() {
+            return Err(FMError::InvalidArgument(
+                "session builder accepts either instructions or a transcript, not both".into(),
+            ));
+        }
+
+        let instructions_json = self
+            .instructions
+            .as_ref()
+            .map(Instructions::to_bridge_json)
+            .transpose()?;
+        let transcript_json = self
+            .transcript
+            .as_ref()
+            .map(Transcript::to_json_string)
+            .transpose()?;
+        let tool_registry = if self.tools.is_empty() {
+            None
+        } else {
+            Some(Arc::new(ToolRegistry::new(self.tools)))
+        };
+        let tools_json = tool_registry
+            .as_ref()
+            .map(|registry| registry.specs_json())
+            .transpose()?;
+
+        let instructions_c = instructions_json
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|error| {
+                FMError::InvalidArgument(format!("instructions JSON contains a NUL byte: {error}"))
+            })?;
+        let transcript_c = transcript_json
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|error| {
+                FMError::InvalidArgument(format!("transcript JSON contains a NUL byte: {error}"))
+            })?;
+        let tools_c = tools_json
+            .as_deref()
+            .map(CString::new)
+            .transpose()
+            .map_err(|error| {
+                FMError::InvalidArgument(format!("tool JSON contains a NUL byte: {error}"))
+            })?;
+
+        let tool_context = tool_registry.as_ref().map_or(ptr::null_mut(), |registry| {
+            Arc::as_ptr(registry).cast_mut().cast::<c_void>()
+        });
+        let mut error: *mut c_char = ptr::null_mut();
+        let ptr = unsafe {
+            ffi::fm_session_create_ex(
+                self.model.map_or(ptr::null_mut(), |model| model.ptr),
+                instructions_c
+                    .as_ref()
+                    .map_or(ptr::null(), |json| json.as_ptr()),
+                transcript_c
+                    .as_ref()
+                    .map_or(ptr::null(), |json| json.as_ptr()),
+                tools_c.as_ref().map_or(ptr::null(), |json| json.as_ptr()),
+                tool_context,
+                tool_registry
+                    .as_ref()
+                    .map(|_| tool_callback_trampoline as ffi::FmToolCallback),
+                &mut error,
+            )
+        };
+        if ptr.is_null() {
+            return Err(crate::error::from_swift(
+                ffi::status::MODEL_UNAVAILABLE,
+                error,
+            ));
+        }
+        Ok(LanguageModelSession {
+            ptr,
+            _tool_registry: tool_registry,
+        })
+    }
+}
+
+/// A detailed generation response.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionResponse<T> {
+    pub content: T,
+    pub raw_content: GeneratedContent,
+    pub transcript: Transcript,
+}
+
+/// One structured-generation stream snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuredStreamSnapshot {
+    pub content_json: String,
+    pub raw_content_json: String,
+    pub is_complete: bool,
+}
+
+/// One structured stream event.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum StructuredStreamEvent {
+    Snapshot(StructuredStreamSnapshot),
+    Done,
+    Error(FMError),
+}
+
+/// One feedback issue category.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackIssueCategory {
+    Unhelpful,
+    TooVerbose,
+    DidNotFollowInstructions,
+    Incorrect,
+    StereotypeOrBias,
+    SuggestiveOrSexual,
+    VulgarOrOffensive,
+    TriggeredGuardrailUnexpectedly,
+}
+
+impl FeedbackIssueCategory {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unhelpful => "unhelpful",
+            Self::TooVerbose => "too_verbose",
+            Self::DidNotFollowInstructions => "did_not_follow_instructions",
+            Self::Incorrect => "incorrect",
+            Self::StereotypeOrBias => "stereotype_or_bias",
+            Self::SuggestiveOrSexual => "suggestive_or_sexual",
+            Self::VulgarOrOffensive => "vulgar_or_offensive",
+            Self::TriggeredGuardrailUnexpectedly => "triggered_guardrail_unexpectedly",
+        }
+    }
+}
+
+/// One feedback issue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FeedbackIssue {
+    pub category: FeedbackIssueCategory,
+    pub explanation: Option<String>,
+}
+
+/// Feedback sentiment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FeedbackSentiment {
+    Positive,
+    Negative,
+    Neutral,
+}
+
+impl FeedbackSentiment {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Positive => "positive",
+            Self::Negative => "negative",
+            Self::Neutral => "neutral",
+        }
+    }
+}
+
+/// A full feedback attachment request.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FeedbackAttachmentRequest {
+    pub sentiment: Option<FeedbackSentiment>,
+    pub issues: Vec<FeedbackIssue>,
+    pub desired_response_text: Option<String>,
+    pub desired_response_content: Option<GeneratedContent>,
+    pub desired_output: Option<crate::transcript::Entry>,
+}
+
+impl FeedbackAttachmentRequest {
+    /// Create an empty feedback request.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            sentiment: None,
+            issues: Vec::new(),
+            desired_response_text: None,
+            desired_response_content: None,
+            desired_output: None,
+        }
+    }
+
+    fn to_bridge_json(&self) -> Result<String, FMError> {
+        let issues = self
+            .issues
+            .iter()
+            .map(|issue| {
+                json!({
+                    "category": issue.category.as_str(),
+                    "explanation": issue.explanation,
+                })
+            })
+            .collect::<Vec<_>>();
+        let desired_output_json = self
+            .desired_output
+            .as_ref()
+            .map(|entry| Transcript::from(vec![entry.clone()]).to_json_string())
+            .transpose()?;
+        let desired_response_content_json = self
+            .desired_response_content
+            .as_ref()
+            .map(GeneratedContent::json_string)
+            .transpose()?;
+        serde_json::to_string(&json!({
+            "sentiment": self.sentiment.map(FeedbackSentiment::as_str),
+            "issues": issues,
+            "desiredResponseText": self.desired_response_text,
+            "desiredResponseContentJSON": desired_response_content_json,
+            "desiredOutputTranscriptJSON": desired_output_json,
+        }))
+        .map_err(|error| {
+            FMError::InvalidArgument(format!(
+                "feedback request is not JSON-serializable: {error}"
+            ))
+        })
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeTextResponse {
+    content: String,
+    #[serde(rename = "rawContentJSON")]
+    raw_content_json: String,
+    #[serde(rename = "transcriptJSON")]
+    transcript_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeStructuredResponse {
+    #[serde(rename = "contentJSON")]
+    content_json: String,
+    #[serde(rename = "rawContentJSON")]
+    raw_content_json: String,
+    #[serde(rename = "transcriptJSON")]
+    transcript_json: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeStructuredSnapshot {
+    #[serde(rename = "contentJSON")]
+    content_json: String,
+    #[serde(rename = "rawContentJSON")]
+    raw_content_json: String,
+    #[serde(rename = "isComplete")]
+    is_complete: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BridgeTextStreamSnapshot {
+    delta: String,
+}
+
+fn respond_request_json(
+    prompt: &Prompt,
+    options: GenerationOptions,
+    schema: Option<&GenerationSchema>,
+    include_schema_in_prompt: bool,
+) -> Result<CString, FMError> {
+    let sampling = match options.sampling() {
+        SamplingMode::Default => json!({ "mode": "default" }),
+        SamplingMode::Greedy => json!({ "mode": "greedy" }),
+        SamplingMode::TopK(k) => json!({
+            "mode": "top_k",
+            "topK": k,
+            "seed": options.sampling_seed(),
+        }),
+        SamplingMode::TopP(p) => json!({
+            "mode": "top_p",
+            "topP": p,
+            "seed": options.sampling_seed(),
+        }),
+    };
+    let payload = serde_json::to_string(&json!({
+        "prompt": prompt.to_bridge_value(),
+        "options": {
+            "temperature": options.temperature(),
+            "maximumResponseTokens": options.maximum_response_tokens(),
+            "sampling": sampling,
+        },
+        "schemaJSON": schema.map(GenerationSchema::json_schema),
+        "includeSchemaInPrompt": include_schema_in_prompt,
+    }))
+    .map_err(|error| {
+        FMError::InvalidArgument(format!("request is not JSON-serializable: {error}"))
+    })?;
+    CString::new(payload).map_err(|error| {
+        FMError::InvalidArgument(format!("request JSON contains a NUL byte: {error}"))
+    })
+}
+
+fn request_response(session: *mut c_void, payload: &CString) -> Result<String, FMError> {
+    let (tx, rx) = mpsc::channel();
+    let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
+    let context = Box::into_raw(tx_box).cast::<c_void>();
+    unsafe {
+        ffi::fm_session_respond_request_json(session, payload.as_ptr(), context, respond_trampoline)
+    };
+    rx.recv().map_err(|_| FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message: "Swift bridge dropped the JSON response channel".into(),
+    })?
+}
+
+fn prompt_to_plain_text(prompt: &Prompt) -> Option<String> {
+    let mut text = String::new();
+    for segment in prompt.segments() {
+        match segment {
+            crate::prompt::Segment::Text(segment) => text.push_str(&segment.text),
+            crate::prompt::Segment::Structure(_) => return None,
+        }
+    }
+    Some(text)
 }
 
 impl Default for LanguageModelSession {
@@ -410,63 +1055,193 @@ struct StreamState {
     done_tx: Mutex<Option<mpsc::Sender<Result<(), FMError>>>>,
 }
 
-unsafe extern "C" fn stream_trampoline(
+unsafe extern "C" fn json_text_stream_trampoline(
     context: *mut c_void,
     chunk: *mut c_char,
     done: bool,
     status: i32,
 ) {
     let state = Arc::from_raw(context.cast::<StreamState>());
-    // Bump the count back up because Swift may invoke us again before
-    // `done == true` (Arc::from_raw consumed our refcount).
     let state_for_swift = state.clone();
     core::mem::forget(state_for_swift);
 
-    let chunk_str: Option<String> = if chunk.is_null() {
+    let payload: Option<String> = if chunk.is_null() {
         None
     } else {
-        let s = core::ffi::CStr::from_ptr(chunk)
+        let value = core::ffi::CStr::from_ptr(chunk)
             .to_string_lossy()
             .into_owned();
         ffi::fm_string_free(chunk);
-        Some(s)
+        Some(value)
     };
 
     if status != ffi::status::OK {
-        let err = crate::error::from_swift(status, ptr::null_mut());
-        let err_for_callback = chunk_str
-            .map(|m| match err.clone() {
-                FMError::Unknown { code, .. } => FMError::Unknown { code, message: m },
-                other => other,
+        let err = payload
+            .map(|message| {
+                crate::error::from_swift(
+                    status,
+                    ffi::fm_string_dup(
+                        CString::new(message)
+                            .expect("stream errors must not contain NUL bytes")
+                            .as_ptr(),
+                    ),
+                )
             })
-            .unwrap_or(err);
-        let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-        cb(StreamEvent::Error(err_for_callback.clone()));
-        drop(cb);
-        let pending_tx = state.done_tx.lock().expect("done_tx mutex poisoned").take();
-        if let Some(tx) = pending_tx {
-            let _ = tx.send(Err(err_for_callback));
+            .unwrap_or_else(|| crate::error::from_swift(status, ptr::null_mut()));
+        let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
+        callback(StreamEvent::Error(err.clone()));
+        drop(callback);
+        if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
+            let _ = tx.send(Err(err));
         }
-        // This was the final invocation: drop the extra ref we forgot above.
         drop(Arc::from_raw(Arc::as_ptr(&state)));
         drop(state);
         return;
     }
 
-    if let Some(s) = chunk_str.as_deref() {
-        let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-        cb(StreamEvent::Chunk(s));
+    if let Some(payload) = payload {
+        match serde_json::from_str::<BridgeTextStreamSnapshot>(&payload) {
+            Ok(snapshot) if !snapshot.delta.is_empty() => {
+                let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
+                callback(StreamEvent::Chunk(&snapshot.delta));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                let err = FMError::DecodingFailure(error.to_string());
+                let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
+                callback(StreamEvent::Error(err.clone()));
+                drop(callback);
+                if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
+                    let _ = tx.send(Err(err));
+                }
+                drop(Arc::from_raw(Arc::as_ptr(&state)));
+                drop(state);
+                return;
+            }
+        }
     }
 
     if done {
-        let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-        cb(StreamEvent::Done);
-        drop(cb);
-        let pending_tx = state.done_tx.lock().expect("done_tx mutex poisoned").take();
-        if let Some(tx) = pending_tx {
+        let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
+        callback(StreamEvent::Done);
+        drop(callback);
+        if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
             let _ = tx.send(Ok(()));
         }
-        // Final invocation: release the extra ref we forgot above.
+        drop(Arc::from_raw(Arc::as_ptr(&state)));
+    }
+    drop(state);
+}
+
+type StructuredStreamCallback = Box<dyn FnMut(StructuredStreamEvent) + Send>;
+
+struct StructuredStreamState {
+    on_event: Mutex<StructuredStreamCallback>,
+    done_tx: Mutex<Option<mpsc::Sender<Result<(), FMError>>>>,
+}
+
+unsafe extern "C" fn structured_stream_trampoline(
+    context: *mut c_void,
+    chunk: *mut c_char,
+    done: bool,
+    status: i32,
+) {
+    let state = Arc::from_raw(context.cast::<StructuredStreamState>());
+    let state_for_swift = state.clone();
+    core::mem::forget(state_for_swift);
+
+    let payload: Option<String> = if chunk.is_null() {
+        None
+    } else {
+        let value = core::ffi::CStr::from_ptr(chunk)
+            .to_string_lossy()
+            .into_owned();
+        ffi::fm_string_free(chunk);
+        Some(value)
+    };
+
+    if status != ffi::status::OK {
+        let err = payload
+            .map(|message| {
+                crate::error::from_swift(
+                    status,
+                    ffi::fm_string_dup(
+                        CString::new(message)
+                            .expect("stream errors must not contain NUL bytes")
+                            .as_ptr(),
+                    ),
+                )
+            })
+            .unwrap_or_else(|| crate::error::from_swift(status, ptr::null_mut()));
+        let mut callback = state
+            .on_event
+            .lock()
+            .expect("structured callback mutex poisoned");
+        callback(StructuredStreamEvent::Error(err.clone()));
+        drop(callback);
+        if let Some(tx) = state
+            .done_tx
+            .lock()
+            .expect("structured done_tx mutex poisoned")
+            .take()
+        {
+            let _ = tx.send(Err(err));
+        }
+        drop(Arc::from_raw(Arc::as_ptr(&state)));
+        drop(state);
+        return;
+    }
+
+    if let Some(payload) = payload {
+        let snapshot: BridgeStructuredSnapshot = match serde_json::from_str(&payload) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                let err = FMError::DecodingFailure(error.to_string());
+                let mut callback = state
+                    .on_event
+                    .lock()
+                    .expect("structured callback mutex poisoned");
+                callback(StructuredStreamEvent::Error(err.clone()));
+                drop(callback);
+                if let Some(tx) = state
+                    .done_tx
+                    .lock()
+                    .expect("structured done_tx mutex poisoned")
+                    .take()
+                {
+                    let _ = tx.send(Err(err));
+                }
+                drop(Arc::from_raw(Arc::as_ptr(&state)));
+                drop(state);
+                return;
+            }
+        };
+        let mut callback = state
+            .on_event
+            .lock()
+            .expect("structured callback mutex poisoned");
+        callback(StructuredStreamEvent::Snapshot(StructuredStreamSnapshot {
+            content_json: snapshot.content_json,
+            raw_content_json: snapshot.raw_content_json,
+            is_complete: snapshot.is_complete,
+        }));
+    }
+
+    if done {
+        let mut callback = state
+            .on_event
+            .lock()
+            .expect("structured callback mutex poisoned");
+        callback(StructuredStreamEvent::Done);
+        drop(callback);
+        if let Some(tx) = state
+            .done_tx
+            .lock()
+            .expect("structured done_tx mutex poisoned")
+            .take()
+        {
+            let _ = tx.send(Ok(()));
+        }
         drop(Arc::from_raw(Arc::as_ptr(&state)));
     }
     drop(state);

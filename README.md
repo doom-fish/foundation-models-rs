@@ -1,30 +1,29 @@
 # foundation-models
 
-Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.apple.com/documentation/foundationmodels) framework — the on-device large language model that ships with Apple Intelligence on macOS 26.0+.
-
-> **Status:** experimental. API surface will change as more of FoundationModels is wrapped (tools, structured generation, transcripts).
+Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.apple.com/documentation/foundationmodels) framework — the on-device large language model that ships with Apple Intelligence on macOS 26+.
 
 ## Features
 
-- **On-device LLM** — runs entirely locally on Apple Silicon
-- **Streaming generation** — token-by-token deltas via callback
-- **Custom instructions** — system-prompt style guidance
-- **Generation options** — temperature, max tokens, sampling modes
-- **Zero dependencies** — no `objc2`, no `core-foundation`, no procedural macros
-- **Async optional** — opt-in `async` feature for runtime-agnostic awaiting
+- **Sessions and multi-turn chat** — create, restore, inspect, and persist `LanguageModelSession`s
+- **Streaming** — text deltas and structured-generation snapshots
+- **Tool calling** — register Rust callbacks as `FoundationModels` `Tool`s
+- **Structured generation** — JSON-schema validation, dynamic schemas, and Rust `Generable` traits
+- **System model configuration** — availability, use cases, guardrails, locales, and adapter handles
+- **Transcript support** — typed transcript inspection plus raw JSON round-tripping
+- **Feedback attachments** — full `LanguageModelFeedback` issue/sentiment support
 
 ## Requirements
 
 - macOS 26.0 or newer (build host **and** runtime)
-- Xcode 26 SDK (the crate's `build.rs` detects this via `xcrun --sdk macosx --show-sdk-version`)
+- Xcode 26 SDK
 - Apple Intelligence enabled in System Settings
-- Apple Silicon (Intel Macs are not eligible)
+- Apple Silicon
 
 ## Installation
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.1", features = ["macos_26_0"] }
+foundation-models = { version = "0.6.0", features = ["macos_26_0"] }
 ```
 
 ## Quick start
@@ -39,82 +38,92 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let session = LanguageModelSession::with_instructions(
-        "You answer in a single concise sentence."
+        "Answer in a single concise sentence.",
     );
-
     let reply = session.respond("Why is the sky blue?")?;
     println!("{reply}");
-
     Ok(())
 }
 ```
 
-## Streaming
+## Tool calling
 
 ```rust,no_run
 use foundation_models::prelude::*;
-use std::io::Write;
+use serde::Deserialize;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let session = LanguageModelSession::new();
-
-    session.stream("Write a haiku about Rust.", |event| match event {
-        StreamEvent::Chunk(s) => {
-            print!("{s}");
-            std::io::stdout().flush().ok();
-        }
-        StreamEvent::Done => println!(),
-        StreamEvent::Error(e) => eprintln!("\nerror: {e}"),
-        _ => {}
-    })?;
-
-    Ok(())
+#[derive(Deserialize)]
+struct EchoArgs {
+    message: String,
 }
-```
-
-## Generation options
-
-```rust,no_run
-use foundation_models::prelude::*;
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-let opts = GenerationOptions::new()
-    .with_temperature(0.7)
-    .with_maximum_response_tokens(500)
-    .with_sampling(SamplingMode::TopP(0.9));
+let schema = GenerationSchema::from_dynamic(
+    DynamicGenerationSchema::object("EchoArgs").with_property(
+        "message",
+        DynamicGenerationProperty::new(DynamicGenerationSchema::string()),
+    ),
+    [],
+)?;
 
-let session = LanguageModelSession::new();
-let reply = session.respond_with("Suggest a recipe.", opts)?;
+let tool = Tool::json("echo", "Echo the provided message.", schema, |args: EchoArgs| {
+    Ok(args.message)
+});
+
+let session = LanguageModelSession::builder()
+    .instructions("Use tools when explicitly asked.")?
+    .tool(tool)
+    .build()?;
+
+let reply = session.respond_prompt(
+    "Use the echo tool exactly once with the message 'hello from Rust'.",
+)?;
 println!("{reply}");
 # Ok(())
 # }
 ```
 
-## Architecture
+## Structured generation
 
-This crate uses the same Swift-bridge pattern as [screencapturekit-rs](https://github.com/doom-fish/screencapturekit-rs):
+```rust,no_run
+use foundation_models::prelude::*;
 
-```text
-┌────────────────────────────────────────────────────────────┐
-│ Safe Rust API (LanguageModelSession, GenerationOptions)    │
-├────────────────────────────────────────────────────────────┤
-│ extern "C" FFI declarations (src/ffi/mod.rs)               │
-├────────────────────────────────────────────────────────────┤
-│ Swift @_cdecl bridge (swift-bridge/Sources/...)            │
-├────────────────────────────────────────────────────────────┤
-│ Apple FoundationModels.framework (Swift, async throws)     │
-└────────────────────────────────────────────────────────────┘
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let schema = GenerationSchema::from_dynamic(
+    DynamicGenerationSchema::object("Movie")
+        .with_property(
+            "title",
+            DynamicGenerationProperty::new(DynamicGenerationSchema::string()),
+        )
+        .with_property(
+            "year",
+            DynamicGenerationProperty::new(DynamicGenerationSchema::integer()),
+        ),
+    [],
+)?;
+
+let session = LanguageModelSession::new();
+let response = session.respond_generated(
+    "Return JSON for one classic science-fiction movie.",
+    &schema,
+    true,
+)?;
+println!("{}", response.json_string()?);
+# Ok(())
+# }
 ```
 
-The Swift layer hides the `async throws` surface behind callback-based C functions, so the Rust side stays dependency-free.
+## Smoke example
 
-## Roadmap
+```bash
+cargo run --example 06_smoke --features macos_26_0
+```
 
-- [ ] `Tool` protocol bridging (function calling)
-- [ ] Structured generation via `Generable` (currently Swift-macro-only)
-- [ ] `Transcript` inspection (per-turn token counts, attachments)
-- [ ] Adapter support
-- [ ] Vision-modality input once Apple ships it
+## Notes
+
+- Swift-only compile-time macros such as `@Generable` and `@Guide` are exposed as Rust runtime traits/builders (`Generable`, `GenerationGuide`, `DynamicGenerationSchema`).
+- `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` is not wrapped because it depends on `BackgroundAssets.AssetPack`, which this crate does not expose.
+- `GenerationID` remains opaque in the Apple SDK; generated-content IDs are surfaced as best-effort string metadata.
 
 ## License
 

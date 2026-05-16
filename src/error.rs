@@ -38,6 +38,14 @@ pub enum FMError {
     ConcurrentRequests(String),
     /// The supplied [`GenerationGuide`] is unsupported by the on-device model.
     UnsupportedGuide(String),
+    /// A tool invocation failed while the model was using `Tool` calling.
+    ToolCallFailed(String),
+    /// An adapter asset pack was invalid.
+    AdapterInvalidAsset(String),
+    /// The requested adapter name was invalid.
+    AdapterInvalidName(String),
+    /// No compatible adapter could be found for the requested name.
+    AdapterCompatibleNotFound(String),
     /// The generation Task was cancelled before completion.
     Cancelled,
     /// An invalid argument crossed the FFI boundary (e.g. a NUL byte in a prompt).
@@ -80,6 +88,10 @@ impl FMError {
             Self::Refusal(_) => ffi::status::REFUSAL,
             Self::ConcurrentRequests(_) => ffi::status::CONCURRENT_REQUESTS,
             Self::UnsupportedGuide(_) => ffi::status::UNSUPPORTED_GUIDE,
+            Self::ToolCallFailed(_) => ffi::status::TOOL_CALL_FAILED,
+            Self::AdapterInvalidAsset(_) => ffi::status::ADAPTER_INVALID_ASSET,
+            Self::AdapterInvalidName(_) => ffi::status::ADAPTER_INVALID_NAME,
+            Self::AdapterCompatibleNotFound(_) => ffi::status::ADAPTER_COMPATIBLE_NOT_FOUND,
             Self::Cancelled => ffi::status::CANCELLED,
             Self::InvalidArgument(_) => ffi::status::INVALID_ARGUMENT,
             Self::Unknown { code, .. } => *code,
@@ -100,6 +112,10 @@ impl FMError {
             | Self::Refusal(message)
             | Self::ConcurrentRequests(message)
             | Self::UnsupportedGuide(message)
+            | Self::ToolCallFailed(message)
+            | Self::AdapterInvalidAsset(message)
+            | Self::AdapterInvalidName(message)
+            | Self::AdapterCompatibleNotFound(message)
             | Self::InvalidArgument(message)
             | Self::Unknown { message, .. } => message,
             Self::Cancelled => "generation cancelled",
@@ -119,14 +135,14 @@ impl std::error::Error for FMError {}
 ///
 /// Takes ownership of `error_str` (a heap-allocated C string from the
 /// Swift bridge) and frees it via `fm_string_free` after copying.
-pub(crate) unsafe fn from_swift(status: i32, error_str: *mut c_char) -> FMError {
+pub(crate) fn from_swift(status: i32, error_str: *mut c_char) -> FMError {
     let message = if error_str.is_null() {
         String::new()
     } else {
-        let s = core::ffi::CStr::from_ptr(error_str)
+        let s = unsafe { core::ffi::CStr::from_ptr(error_str) }
             .to_string_lossy()
             .into_owned();
-        ffi::fm_string_free(error_str);
+        unsafe { ffi::fm_string_free(error_str) };
         s
     };
 
@@ -144,6 +160,10 @@ pub(crate) unsafe fn from_swift(status: i32, error_str: *mut c_char) -> FMError 
         ffi::status::REFUSAL => FMError::Refusal(message),
         ffi::status::CONCURRENT_REQUESTS => FMError::ConcurrentRequests(message),
         ffi::status::UNSUPPORTED_GUIDE => FMError::UnsupportedGuide(message),
+        ffi::status::TOOL_CALL_FAILED => FMError::ToolCallFailed(message),
+        ffi::status::ADAPTER_INVALID_ASSET => FMError::AdapterInvalidAsset(message),
+        ffi::status::ADAPTER_INVALID_NAME => FMError::AdapterInvalidName(message),
+        ffi::status::ADAPTER_COMPATIBLE_NOT_FOUND => FMError::AdapterCompatibleNotFound(message),
         ffi::status::CANCELLED => FMError::Cancelled,
         ffi::status::INVALID_ARGUMENT => FMError::InvalidArgument(message),
         code => FMError::Unknown { code, message },

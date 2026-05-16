@@ -35,15 +35,39 @@ fn read_swiftinterface() -> String {
         "System/Library/Frameworks/FoundationModels.framework/\
          Modules/FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface",
     );
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("can't read {}: {e}", path.display()))
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("can't read {}: {e}", path.display()))
 }
 
 fn read_our_bridge() -> String {
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("swift-bridge/Sources/FoundationModelsBridge/FoundationModels.swift");
-    std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("can't read {}: {e}", path.display()))
+    fn collect(path: &std::path::Path, out: &mut String) {
+        if path.is_dir() {
+            let mut entries = std::fs::read_dir(path)
+                .unwrap_or_else(|e| panic!("can't read dir {}: {e}", path.display()))
+                .map(Result::unwrap)
+                .collect::<Vec<_>>();
+            entries.sort_by_key(std::fs::DirEntry::path);
+            for entry in entries {
+                collect(&entry.path(), out);
+            }
+            return;
+        }
+        if let Some("swift" | "rs") = path.extension().and_then(std::ffi::OsStr::to_str) {
+            out.push_str(
+                &std::fs::read_to_string(path)
+                    .unwrap_or_else(|e| panic!("can't read {}: {e}", path.display())),
+            );
+            out.push('\n');
+        }
+    }
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let mut text = String::new();
+    collect(
+        &root.join("swift-bridge/Sources/FoundationModelsBridge"),
+        &mut text,
+    );
+    collect(&root.join("src"), &mut text);
+    text
 }
 
 /// Extract the public surface of a single type by isolating the lines
@@ -54,8 +78,7 @@ fn read_our_bridge() -> String {
 fn extract_type_surface(swiftinterface: &str, type_name: &str) -> BTreeSet<String> {
     // Locate the type declaration line.
     let needle =
-        regex_lite::Regex::new(&format!(r"\b(class|struct|enum)\s+{type_name}\b"))
-            .unwrap();
+        regex_lite::Regex::new(&format!(r"\b(class|struct|enum)\s+{type_name}\b")).unwrap();
     let start_match = needle
         .find(swiftinterface)
         .unwrap_or_else(|| panic!("can't locate `{type_name}` in swiftinterface"));
@@ -93,14 +116,18 @@ fn extract_type_surface(swiftinterface: &str, type_name: &str) -> BTreeSet<Strin
         surface.insert("init".to_string());
     }
     // Functions: `public func NAME(`, `final public func NAME(`, etc.
-    let func_re =
-        regex_lite::Regex::new(r"\bpublic\s+(?:[a-zA-Z@_][\w@()<>=, ]*\s+)?func\s+([a-zA-Z_][A-Za-z0-9_]*)").unwrap();
+    let func_re = regex_lite::Regex::new(
+        r"\bpublic\s+(?:[a-zA-Z@_][\w@()<>=, ]*\s+)?func\s+([a-zA-Z_][A-Za-z0-9_]*)",
+    )
+    .unwrap();
     for c in func_re.captures_iter(body) {
         surface.insert(c[1].to_string());
     }
     // Vars: `public var NAME` / `public let NAME` / `public static var NAME`
-    let var_re =
-        regex_lite::Regex::new(r"\bpublic\s+(?:static\s+|class\s+|final\s+)*(?:var|let)\s+([a-zA-Z_][A-Za-z0-9_]*)").unwrap();
+    let var_re = regex_lite::Regex::new(
+        r"\bpublic\s+(?:static\s+|class\s+|final\s+)*(?:var|let)\s+([a-zA-Z_][A-Za-z0-9_]*)",
+    )
+    .unwrap();
     for c in var_re.captures_iter(body) {
         surface.insert(c[1].to_string());
     }
@@ -159,7 +186,10 @@ impl Report {
             }
         }
         if pct < 100.0 {
-            return Err(format!("{} coverable coverage is {pct:.1}%", self.type_name));
+            return Err(format!(
+                "{} coverable coverage is {pct:.1}%",
+                self.type_name
+            ));
         }
         Ok(())
     }
@@ -189,7 +219,7 @@ fn references_in_bridge(symbols: &BTreeSet<String>) -> BTreeSet<String> {
 /// Map the Swift-interface name onto the textual form our bridge actually uses.
 fn swift_aliases() -> std::collections::BTreeMap<&'static str, &'static str> {
     [
-        ("init", "Session("),    // LanguageModelSession( + GenerationOptions(
+        ("init", "Session("), // LanguageModelSession( + GenerationOptions(
     ]
     .into_iter()
     .collect()
@@ -203,23 +233,13 @@ fn system_language_model_coverage() {
     let apple = extract_type_surface(&si, "SystemLanguageModel");
     let referenced = references_in_bridge(&apple);
     let omitted: BTreeSet<String> = [
-        // We wrap `default` + `availability`. The rest are advanced features
-        // for v0.2:
-        "supportedLanguages", // language list discovery — v0.2
-        "languageRecognizer", // tool-call language hint — v0.2
-        "guardrails",         // user-overridable guardrails — v0.2
-        "use",                // useCase parameterisation — v0.2
-        "isAvailable",        // we use `availability` directly
-        "init",               // we don't construct, we read .default
-        "useCase",            // v0.2
-        "Availability",       // nested type — surface accessed via .available pattern match
-        "Reason",             // nested type — surface accessed via .deviceNotEligible etc.
-        "Guardrails",         // nested type — v0.2
-        "UseCase",            // nested type — v0.2
-        "SupportedLanguages", // nested type — v0.2
-        // Apple-defined alternative model handles. We only ship `default`.
-        "contentTagging",
-        "general",
+        // Compiler-synthesized / nested helper types not surfaced 1:1 in Rust.
+        "Availability",
+        "UseCase",
+        "Guardrails",
+        "isAvailable", // wrapped as Rust `is_available`
+        // The asset-pack compatibility helper depends on BackgroundAssets.
+        "isCompatible",
     ]
     .into_iter()
     .map(String::from)
@@ -240,30 +260,17 @@ fn language_model_session_coverage() {
     let apple = extract_type_surface(&si, "LanguageModelSession");
     let referenced = references_in_bridge(&apple);
     let omitted: BTreeSet<String> = [
-        // Out of scope for v0.1 — string-only chat is the v0.1 surface.
-        "transcript",          // transcript inspection — v0.2
-        "isResponding",        // KVO-style polling — v0.2
-        "prewarm",             // pre-warm the model — v0.2
-        "Response",            // nested type — wrapper just gets `.content`
-        "logFeedbackAttachment", // user-feedback feature — v0.2
-        "GenerationError",     // nested error type — wrapper maps via switch
-        "Error",               // alias for GenerationError
-        "ToolCallError",       // nested tool-call error — v0.2 (no Tool support)
-        "Refusal",             // nested type for refusal explanations — v0.2
-        "PromptBuilder",       // result builder for fluent prompts — v0.2
-        "InstructionsBuilder", // result builder for instructions — v0.2
-        // Schema-driven structured generation — v0.2 (Generable macro support):
-        "schema",
-        "type",
-        "includeSchemaInPrompt",
-        "generating",
-        // Stream variants beyond plain string — schema/Generable variants v0.2:
+        // Builder-only Swift sugar without a direct Rust analogue.
+        "PromptBuilder",
+        "InstructionsBuilder",
+        // Nested helper/error types are surfaced as Rust structs or error variants,
+        // not as a 1:1 API surface.
+        "GenerationError",
         "ResponseStream",
+        "Response",
         "Snapshot",
-        // Nested Response<Content> fields — we expose only `.content` (the
-        // primary text answer); the metadata fields below are v0.2.
-        "rawContent",
-        "transcriptEntries",
+        "ToolCallError",
+        "Refusal",
     ]
     .into_iter()
     .map(String::from)
@@ -320,27 +327,16 @@ fn sampling_mode_coverage() {
 #[test]
 fn response_stream_snapshot_coverage() {
     // `LanguageModelSession.ResponseStream<Content>.Snapshot` is the per-token
-    // delta type yielded by `streamResponse(to:options:)`. Our streaming
-    // bridge reads `partial.content` to get the accumulated text — verify
-    // the field is actually called `content` in Apple's swiftinterface so a
-    // future SDK rename can't silently break us.
+    // delta type yielded by `streamResponse(to:options:)`. We surface both
+    // `content` and `rawContent` for structured streaming.
     let si = read_swiftinterface();
     let apple = extract_type_surface(&si, "Snapshot");
     let referenced = references_in_bridge(&apple);
-    let omitted: BTreeSet<String> = [
-        // We surface only `.content` — the accumulated PartiallyGenerated value.
-        // `rawContent` exposes the underlying `GeneratedContent` for schema-
-        // driven structured generation, which lands in v0.2.
-        "rawContent",
-    ]
-    .into_iter()
-    .map(String::from)
-    .collect();
     Report {
         type_name: "LanguageModelSession.ResponseStream.Snapshot",
         apple,
         referenced,
-        omitted,
+        omitted: BTreeSet::new(),
     }
     .run()
     .unwrap();

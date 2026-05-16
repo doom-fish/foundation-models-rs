@@ -23,20 +23,24 @@ import FoundationModels
 // Mirrored 1:1 in src/ffi/mod.rs::status. Plain Int32 module constants
 // keep the @_cdecl call sites self-contained.
 
-private let FM_OK: Int32 = 0
-private let FM_INVALID_ARGUMENT: Int32 = -1
-private let FM_MODEL_UNAVAILABLE: Int32 = -2
-private let FM_CANCELLED: Int32 = -3
-private let FM_GUARDRAIL_VIOLATION: Int32 = -4
-private let FM_CONTEXT_WINDOW_EXCEEDED: Int32 = -5
-private let FM_UNSUPPORTED_LANGUAGE: Int32 = -6
-private let FM_ASSETS_UNAVAILABLE: Int32 = -7
-private let FM_RATE_LIMITED: Int32 = -8
-private let FM_DECODING_FAILURE: Int32 = -9
-private let FM_REFUSAL: Int32 = -10
-private let FM_CONCURRENT_REQUESTS: Int32 = -11
-private let FM_UNSUPPORTED_GUIDE: Int32 = -12
-private let FM_UNKNOWN: Int32 = -99
+let FM_OK: Int32 = 0
+let FM_INVALID_ARGUMENT: Int32 = -1
+let FM_MODEL_UNAVAILABLE: Int32 = -2
+let FM_CANCELLED: Int32 = -3
+let FM_GUARDRAIL_VIOLATION: Int32 = -4
+let FM_CONTEXT_WINDOW_EXCEEDED: Int32 = -5
+let FM_UNSUPPORTED_LANGUAGE: Int32 = -6
+let FM_ASSETS_UNAVAILABLE: Int32 = -7
+let FM_RATE_LIMITED: Int32 = -8
+let FM_DECODING_FAILURE: Int32 = -9
+let FM_REFUSAL: Int32 = -10
+let FM_CONCURRENT_REQUESTS: Int32 = -11
+let FM_UNSUPPORTED_GUIDE: Int32 = -12
+let FM_TOOL_CALL_FAILED: Int32 = -13
+let FM_ADAPTER_INVALID_ASSET: Int32 = -14
+let FM_ADAPTER_INVALID_NAME: Int32 = -15
+let FM_ADAPTER_COMPATIBLE_NOT_FOUND: Int32 = -16
+let FM_UNKNOWN: Int32 = -99
 
 // MARK: - String Helpers
 
@@ -52,8 +56,29 @@ public func fm_string_free(_ str: UnsafeMutablePointer<CChar>?) {
     free(str)
 }
 
-private func ffiString(_ s: String) -> UnsafeMutablePointer<CChar>? {
+func ffiString(_ s: String) -> UnsafeMutablePointer<CChar>? {
     return s.withCString { strdup($0) }
+}
+
+func writeErrorOut(
+    _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ message: String
+) {
+    errorOut?.pointee = ffiString(message)
+}
+
+@_cdecl("fm_bytes_free")
+public func fm_bytes_free(_ ptr: UnsafeMutableRawPointer?) {
+    guard let ptr = ptr else { return }
+    free(ptr)
+}
+
+func copyDataToHeap(_ data: Data) -> UnsafeMutableRawPointer? {
+    guard !data.isEmpty else { return nil }
+    let ptr = malloc(data.count)
+    guard let ptr else { return nil }
+    data.copyBytes(to: ptr.assumingMemoryBound(to: UInt8.self), count: data.count)
+    return ptr
 }
 
 // MARK: - Object Lifetime
@@ -172,19 +197,24 @@ public func fm_session_is_responding(_ sessionPtr: UnsafeMutableRawPointer) -> B
 
 #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
 @available(macOS 26.0, *)
-private func buildOptions(
+func buildOptions(
     temperature: Double,
     maxTokens: Int32,
     samplingMode: Int32,
     topK: Int32,
-    topP: Double
+    topP: Double,
+    seed: UInt64? = nil
 ) -> GenerationOptions {
     var sampling: GenerationOptions.SamplingMode? = nil
     switch samplingMode {
-    case 1: sampling = .greedy
-    case 2 where topK > 0: sampling = .random(top: Int(topK))
-    case 3 where topP > 0: sampling = .random(probabilityThreshold: topP)
-    default: sampling = nil
+    case 1:
+        sampling = .greedy
+    case 2 where topK > 0:
+        sampling = .random(top: Int(topK), seed: seed)
+    case 3 where topP > 0:
+        sampling = .random(probabilityThreshold: topP, seed: seed)
+    default:
+        sampling = nil
     }
     let temp: Double? = temperature.isNaN ? nil : temperature
     let maxT: Int? = maxTokens > 0 ? Int(maxTokens) : nil
@@ -324,20 +354,46 @@ public func fm_session_stream_response(
 
 #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
 @available(macOS 26.0, *)
-private func mapError(_ error: Error) -> (Int32, String) {
+func mapError(_ error: Error) -> (Int32, String) {
     if let lmError = error as? LanguageModelSession.GenerationError {
         let msg = lmError.localizedDescription
         switch lmError {
-        case .guardrailViolation:        return (FM_GUARDRAIL_VIOLATION, msg)
-        case .exceededContextWindowSize: return (FM_CONTEXT_WINDOW_EXCEEDED, msg)
-        case .unsupportedLanguageOrLocale: return (FM_UNSUPPORTED_LANGUAGE, msg)
-        case .assetsUnavailable:         return (FM_ASSETS_UNAVAILABLE, msg)
-        case .rateLimited:               return (FM_RATE_LIMITED, msg)
-        case .decodingFailure:           return (FM_DECODING_FAILURE, msg)
-        case .refusal:                   return (FM_REFUSAL, msg)
-        case .concurrentRequests:        return (FM_CONCURRENT_REQUESTS, msg)
-        case .unsupportedGuide:          return (FM_UNSUPPORTED_GUIDE, msg)
-        @unknown default:                return (FM_UNKNOWN, msg)
+        case .guardrailViolation:
+            return (FM_GUARDRAIL_VIOLATION, msg)
+        case .exceededContextWindowSize:
+            return (FM_CONTEXT_WINDOW_EXCEEDED, msg)
+        case .unsupportedLanguageOrLocale:
+            return (FM_UNSUPPORTED_LANGUAGE, msg)
+        case .assetsUnavailable:
+            return (FM_ASSETS_UNAVAILABLE, msg)
+        case .rateLimited:
+            return (FM_RATE_LIMITED, msg)
+        case .decodingFailure:
+            return (FM_DECODING_FAILURE, msg)
+        case .refusal:
+            return (FM_REFUSAL, msg)
+        case .concurrentRequests:
+            return (FM_CONCURRENT_REQUESTS, msg)
+        case .unsupportedGuide:
+            return (FM_UNSUPPORTED_GUIDE, msg)
+        @unknown default:
+            return (FM_UNKNOWN, msg)
+        }
+    }
+    if let toolCallError = error as? LanguageModelSession.ToolCallError {
+        return (FM_TOOL_CALL_FAILED, toolCallError.localizedDescription)
+    }
+    if let adapterError = error as? SystemLanguageModel.Adapter.AssetError {
+        let msg = adapterError.localizedDescription
+        switch adapterError {
+        case .invalidAsset:
+            return (FM_ADAPTER_INVALID_ASSET, msg)
+        case .invalidAdapterName:
+            return (FM_ADAPTER_INVALID_NAME, msg)
+        case .compatibleAdapterNotFound:
+            return (FM_ADAPTER_COMPATIBLE_NOT_FOUND, msg)
+        @unknown default:
+            return (FM_UNKNOWN, msg)
         }
     }
     let nsError = error as NSError
@@ -347,7 +403,7 @@ private func mapError(_ error: Error) -> (Int32, String) {
     return (FM_UNKNOWN, error.localizedDescription)
 }
 #else
-private func mapError(_ error: Error) -> (Int32, String) {
+func mapError(_ error: Error) -> (Int32, String) {
     return (FM_UNKNOWN, error.localizedDescription)
 }
 #endif
@@ -377,49 +433,7 @@ private func mapError(_ error: Error) -> (Int32, String) {
 
 @available(macOS 26.0, *)
 private func buildDynamicSchema(from json: Any, name: String) throws -> DynamicGenerationSchema {
-    guard let dict = json as? [String: Any] else {
-        throw NSError(domain: "fm-bridge", code: -1, userInfo: [
-            NSLocalizedDescriptionKey: "schema must be a JSON object"
-        ])
-    }
-    let typeStr = (dict["type"] as? String) ?? "object"
-    let desc = dict["description"] as? String
-
-    switch typeStr {
-    case "object":
-        let nm = (dict["name"] as? String) ?? name
-        var props: [DynamicGenerationSchema.Property] = []
-        if let propDict = dict["properties"] as? [String: Any] {
-            for (pname, pval) in propDict {
-                let psub = try buildDynamicSchema(from: pval, name: pname)
-                let pdesc = (pval as? [String: Any])?["description"] as? String
-                let opt = ((pval as? [String: Any])?["optional"] as? Bool) ?? false
-                props.append(DynamicGenerationSchema.Property(
-                    name: pname, description: pdesc, schema: psub, isOptional: opt))
-            }
-        }
-        return DynamicGenerationSchema(name: nm, description: desc, properties: props)
-    case "array":
-        let itemJson = dict["items"] ?? ["type": "string"]
-        let itemSchema = try buildDynamicSchema(from: itemJson, name: "Item")
-        let minE = (dict["min"] as? Int)
-        let maxE = (dict["max"] as? Int)
-        return DynamicGenerationSchema(arrayOf: itemSchema,
-                                       minimumElements: minE,
-                                       maximumElements: maxE)
-    case "string":
-        return DynamicGenerationSchema(type: String.self, guides: [])
-    case "integer":
-        return DynamicGenerationSchema(type: Int.self, guides: [])
-    case "number":
-        return DynamicGenerationSchema(type: Double.self, guides: [])
-    case "boolean":
-        return DynamicGenerationSchema(type: Bool.self, guides: [])
-    default:
-        throw NSError(domain: "fm-bridge", code: -2, userInfo: [
-            NSLocalizedDescriptionKey: "unsupported schema type: \(typeStr)"
-        ])
-    }
+    try bridgeBuildDynamicSchema(from: json, name: name)
 }
 
 #endif
@@ -524,18 +538,18 @@ public func fm_session_log_feedback(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
-        let s: LanguageModelFeedbackAttachment.Sentiment
+        let s: LanguageModelFeedback.Sentiment
         switch sentiment {
         case 1: s = .positive
         case -1: s = .negative
         default: s = .neutral
         }
-        var issues: [LanguageModelFeedbackAttachment.Issue] = []
+        var issues: [LanguageModelFeedback.Issue] = []
         if let p = description {
             let str = String(cString: p)
             issues.append(.init(category: .unhelpful, explanation: str))
         }
-        session.logFeedbackAttachment(sentiment: s, issues: issues, desiredOutput: nil)
+        _ = session.logFeedbackAttachment(sentiment: s, issues: issues, desiredOutput: nil)
     }
     #endif
 }

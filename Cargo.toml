@@ -1,6 +1,6 @@
 [package]
 name = "foundation-models"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/foundation-models-rs"
@@ -49,6 +49,8 @@ async = []
 macos_26_0 = []
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [dev-dependencies]
 regex-lite = "0.1"
@@ -82,6 +84,10 @@ required-features = ["macos_26_0"]
 [[example]]
 name = "05_async"
 required-features = ["macos_26_0", "async"]
+
+[[example]]
+name = "06_smoke"
+required-features = ["macos_26_0"]
 
 [profile.release]
 debug = "full"
