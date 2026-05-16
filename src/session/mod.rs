@@ -105,6 +105,32 @@ impl LanguageModelSession {
         unsafe { ffi::fm_session_is_responding(self.ptr) }
     }
 
+    /// Return a best-effort JSON serialisation of the session's
+    /// `Transcript` — the full history of user prompts and model
+    /// responses. Useful for persisting a chat session across
+    /// process boundaries.
+    #[must_use]
+    pub fn transcript_json(&self) -> String {
+        let p = unsafe { ffi::fm_session_transcript_json(self.ptr) };
+        if p.is_null() {
+            return String::from("{}");
+        }
+        let s = unsafe { core::ffi::CStr::from_ptr(p) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { ffi::fm_string_free(p) };
+        s
+    }
+
+    /// Log feedback on the most recent response for diagnostic /
+    /// fine-tuning purposes. `sentiment`:
+    /// `1` positive, `0` neutral, `-1` negative.
+    pub fn log_feedback(&self, sentiment: i32, description: Option<&str>) {
+        let cstr = description.and_then(|s| CString::new(s).ok());
+        let p = cstr.as_ref().map_or(core::ptr::null(), |c| c.as_ptr());
+        unsafe { ffi::fm_session_log_feedback(self.ptr, sentiment, p) };
+    }
+
     /// Prompt-engineered JSON-shape response.
     ///
     /// Wraps the prompt with a "respond with valid JSON matching this schema"

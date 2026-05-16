@@ -492,3 +492,50 @@ public func fm_session_respond_with_schema(
     let cstr = ffiString("FoundationModels requires macOS 26.0 or newer")
     callback(context, nil, cstr, FM_MODEL_UNAVAILABLE)
 }
+
+// MARK: - Transcript export (v0.5)
+
+@_cdecl("fm_session_transcript_json")
+public func fm_session_transcript_json(
+    _ sessionPtr: UnsafeMutableRawPointer
+) -> UnsafeMutablePointer<CChar>? {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        // Best-effort transcript -> JSON via JSONEncoder.
+        let transcript = session.transcript
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(transcript),
+           let s = String(data: data, encoding: .utf8) {
+            return ffiString(s)
+        }
+        return ffiString("{}")
+    }
+    #endif
+    return ffiString("{}")
+}
+
+@_cdecl("fm_session_log_feedback")
+public func fm_session_log_feedback(
+    _ sessionPtr: UnsafeMutableRawPointer,
+    _ sentiment: Int32,
+    _ description: UnsafePointer<CChar>?
+) {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        let s: LanguageModelFeedbackAttachment.Sentiment
+        switch sentiment {
+        case 1: s = .positive
+        case -1: s = .negative
+        default: s = .neutral
+        }
+        var issues: [LanguageModelFeedbackAttachment.Issue] = []
+        if let p = description {
+            let str = String(cString: p)
+            issues.append(.init(category: .unhelpful, explanation: str))
+        }
+        session.logFeedbackAttachment(sentiment: s, issues: issues, desiredOutput: nil)
+    }
+    #endif
+}

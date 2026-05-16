@@ -85,6 +85,17 @@ extern "C" {
 
     /// Returns `true` if `session` is currently producing a response.
     pub fn fm_session_is_responding(session: *mut c_void) -> bool;
+
+    /// Best-effort JSON serialisation of the session's `Transcript`.
+    pub fn fm_session_transcript_json(session: *mut c_void) -> *mut c_char;
+
+    /// Log feedback for the most recent response (sentiment: 1 = positive,
+    /// 0 = neutral, -1 = negative).
+    pub fn fm_session_log_feedback(
+        session: *mut c_void,
+        sentiment: i32,
+        description: *const c_char,
+    );
 }
 
 /// Status codes mirrored 1:1 from the `FM_*` constants in
