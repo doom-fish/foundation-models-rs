@@ -171,6 +171,91 @@ impl LanguageModelSession {
         })?
     }
 
+    /// Schema-driven structured response.
+    ///
+    /// Builds a `DynamicGenerationSchema` from the provided JSON
+    /// schema, runs `LanguageModelSession.respond(schema:prompt:)`,
+    /// and returns the model's `GeneratedContent.jsonString` — a
+    /// well-formed JSON string matching the requested shape.
+    ///
+    /// Supported `schema` shape (strict subset of JSON Schema):
+    ///
+    /// ```json
+    /// {
+    ///   "type": "object",
+    ///   "name": "Movie",
+    ///   "properties": {
+    ///     "title":  { "type": "string", "description": "Movie title" },
+    ///     "year":   { "type": "integer" },
+    ///     "rating": { "type": "number", "optional": true },
+    ///     "tags":   { "type": "array", "items": { "type": "string" }, "min": 1, "max": 5 }
+    ///   }
+    /// }
+    /// ```
+    ///
+    /// Primitive types: `"string"`, `"integer"`, `"number"`,
+    /// `"boolean"`, `"array"`, `"object"`. Each property may set
+    /// `"description"` and `"optional"`. Array schemas accept
+    /// `"items"` plus optional `"min"` / `"max"` element counts.
+    ///
+    /// # Errors
+    ///
+    /// See [`respond`](Self::respond) for general errors, plus a
+    /// "schema build failed" / "schema JSON is not valid" error
+    /// returned as [`FMError::Unknown`] if the schema is malformed.
+    pub fn respond_with_schema(
+        &self,
+        prompt: &str,
+        schema: &str,
+        include_schema_in_prompt: bool,
+    ) -> Result<String, FMError> {
+        self.respond_with_schema_options(prompt, schema, include_schema_in_prompt, GenerationOptions::new())
+    }
+
+    /// [`respond_with_schema`](Self::respond_with_schema) with
+    /// explicit generation options.
+    ///
+    /// # Errors
+    ///
+    /// See [`respond_with_schema`](Self::respond_with_schema).
+    pub fn respond_with_schema_options(
+        &self,
+        prompt: &str,
+        schema: &str,
+        include_schema_in_prompt: bool,
+        options: GenerationOptions,
+    ) -> Result<String, FMError> {
+        let prompt_c = CString::new(prompt)
+            .map_err(|e| FMError::InvalidArgument(format!("prompt NUL byte: {e}")))?;
+        let schema_c = CString::new(schema)
+            .map_err(|e| FMError::InvalidArgument(format!("schema NUL byte: {e}")))?;
+        let opts = options.to_ffi();
+        let (tx, rx) = mpsc::channel();
+        let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
+        let context = Box::into_raw(tx_box).cast::<c_void>();
+
+        unsafe {
+            ffi::fm_session_respond_with_schema(
+                self.ptr,
+                prompt_c.as_ptr(),
+                schema_c.as_ptr(),
+                include_schema_in_prompt,
+                opts.temperature,
+                opts.maximum_response_tokens,
+                opts.sampling_mode,
+                opts.top_k,
+                opts.top_p,
+                context,
+                respond_trampoline,
+            );
+        }
+
+        rx.recv().map_err(|_| FMError::Unknown {
+            code: ffi::status::UNKNOWN,
+            message: "Swift bridge dropped the callback channel".into(),
+        })?
+    }
+
     /// Stream the response as the model generates it. The callback is invoked
     /// with each delta and a final invocation with `done == true`.
     ///

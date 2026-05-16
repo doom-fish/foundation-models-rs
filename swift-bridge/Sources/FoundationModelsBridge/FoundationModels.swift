@@ -351,3 +351,144 @@ private func mapError(_ error: Error) -> (Int32, String) {
     return (FM_UNKNOWN, error.localizedDescription)
 }
 #endif
+
+// MARK: - Schema-driven respond (v0.4)
+//
+// Takes a JSON-schema-shaped Rust string, builds a
+// `DynamicGenerationSchema`, runs respond(schema:prompt:), and returns
+// the model's `GeneratedContent.jsonString`.
+//
+// Supported schema shape (a strict subset of JSON Schema):
+// {
+//   "type": "object",
+//   "name": "Root",            // optional, defaults to "Root"
+//   "description": "…",        // optional
+//   "properties": {
+//      "title": { "type": "string", "description": "…", "optional": false },
+//      "year":  { "type": "integer" },
+//      "tags":  { "type": "array", "items": { "type": "string" }, "min": 1, "max": 5 }
+//   }
+// }
+//
+// Primitive type strings: "string", "integer" (Int), "number" (Double),
+// "boolean", "array", "object".
+
+#if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+
+@available(macOS 26.0, *)
+private func buildDynamicSchema(from json: Any, name: String) throws -> DynamicGenerationSchema {
+    guard let dict = json as? [String: Any] else {
+        throw NSError(domain: "fm-bridge", code: -1, userInfo: [
+            NSLocalizedDescriptionKey: "schema must be a JSON object"
+        ])
+    }
+    let typeStr = (dict["type"] as? String) ?? "object"
+    let desc = dict["description"] as? String
+
+    switch typeStr {
+    case "object":
+        let nm = (dict["name"] as? String) ?? name
+        var props: [DynamicGenerationSchema.Property] = []
+        if let propDict = dict["properties"] as? [String: Any] {
+            for (pname, pval) in propDict {
+                let psub = try buildDynamicSchema(from: pval, name: pname)
+                let pdesc = (pval as? [String: Any])?["description"] as? String
+                let opt = ((pval as? [String: Any])?["optional"] as? Bool) ?? false
+                props.append(DynamicGenerationSchema.Property(
+                    name: pname, description: pdesc, schema: psub, isOptional: opt))
+            }
+        }
+        return DynamicGenerationSchema(name: nm, description: desc, properties: props)
+    case "array":
+        let itemJson = dict["items"] ?? ["type": "string"]
+        let itemSchema = try buildDynamicSchema(from: itemJson, name: "Item")
+        let minE = (dict["min"] as? Int)
+        let maxE = (dict["max"] as? Int)
+        return DynamicGenerationSchema(arrayOf: itemSchema,
+                                       minimumElements: minE,
+                                       maximumElements: maxE)
+    case "string":
+        return DynamicGenerationSchema(type: String.self, guides: [])
+    case "integer":
+        return DynamicGenerationSchema(type: Int.self, guides: [])
+    case "number":
+        return DynamicGenerationSchema(type: Double.self, guides: [])
+    case "boolean":
+        return DynamicGenerationSchema(type: Bool.self, guides: [])
+    default:
+        throw NSError(domain: "fm-bridge", code: -2, userInfo: [
+            NSLocalizedDescriptionKey: "unsupported schema type: \(typeStr)"
+        ])
+    }
+}
+
+#endif
+
+@_cdecl("fm_session_respond_with_schema")
+public func fm_session_respond_with_schema(
+    _ sessionPtr: UnsafeMutableRawPointer,
+    _ prompt: UnsafePointer<CChar>,
+    _ schemaJson: UnsafePointer<CChar>,
+    _ includeSchemaInPrompt: Bool,
+    _ temperature: Double,
+    _ maxTokens: Int32,
+    _ samplingMode: Int32,
+    _ topK: Int32,
+    _ topP: Double,
+    _ context: UnsafeMutableRawPointer?,
+    _ callback: @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafeMutablePointer<CChar>?,
+        UnsafeMutablePointer<CChar>?,
+        Int32
+    ) -> Void
+) {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        let promptStr = String(cString: prompt)
+        let schemaStr = String(cString: schemaJson)
+        let opts = buildOptions(
+            temperature: temperature,
+            maxTokens: maxTokens,
+            samplingMode: samplingMode,
+            topK: topK,
+            topP: topP
+        )
+
+        guard let schemaData = schemaStr.data(using: .utf8),
+              let schemaParsed = try? JSONSerialization.jsonObject(with: schemaData, options: []) else {
+            let cstr = ffiString("schema JSON is not valid")
+            callback(context, nil, cstr, FM_UNKNOWN)
+            return
+        }
+        do {
+            let dyn = try buildDynamicSchema(from: schemaParsed, name: "Root")
+            let schema = try GenerationSchema(root: dyn, dependencies: [])
+            Task.detached {
+                do {
+                    let response = try await session.respond(
+                        to: Prompt(promptStr),
+                        schema: schema,
+                        includeSchemaInPrompt: includeSchemaInPrompt,
+                        options: opts
+                    )
+                    let cstr = ffiString(response.content.jsonString)
+                    callback(context, cstr, nil, FM_OK)
+                } catch {
+                    let (code, message) = mapError(error)
+                    let cstr = ffiString(message)
+                    callback(context, nil, cstr, code)
+                }
+            }
+            return
+        } catch {
+            let cstr = ffiString("schema build failed: \(error.localizedDescription)")
+            callback(context, nil, cstr, FM_UNKNOWN)
+            return
+        }
+    }
+    #endif
+    let cstr = ffiString("FoundationModels requires macOS 26.0 or newer")
+    callback(context, nil, cstr, FM_MODEL_UNAVAILABLE)
+}

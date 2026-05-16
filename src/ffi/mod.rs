@@ -53,6 +53,20 @@ extern "C" {
         callback: FmRespondCallback,
     );
 
+    pub fn fm_session_respond_with_schema(
+        session: *mut c_void,
+        prompt: *const c_char,
+        schema_json: *const c_char,
+        include_schema_in_prompt: bool,
+        temperature: f64,
+        max_tokens: i32,
+        sampling_mode: i32,
+        top_k: i32,
+        top_p: f64,
+        context: *mut c_void,
+        callback: FmRespondCallback,
+    );
+
     pub fn fm_session_stream_response(
         session: *mut c_void,
         prompt: *const c_char,
