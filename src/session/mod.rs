@@ -105,6 +105,33 @@ impl LanguageModelSession {
         unsafe { ffi::fm_session_is_responding(self.ptr) }
     }
 
+    /// Prompt-engineered JSON-shape response.
+    ///
+    /// Wraps the prompt with a "respond with valid JSON matching this schema"
+    /// instruction and parses the response. The schema is a
+    /// `serde_json::Value`-style JSON string (passed as text).
+    ///
+    /// Useful for getting structured data out of the model without the
+    /// full Generable macro machinery. The model still returns plain
+    /// text — the caller must parse with `serde_json` / `serde` after.
+    ///
+    /// # Errors
+    ///
+    /// See [`respond`](Self::respond).
+    pub fn respond_with_json_schema(
+        &self,
+        prompt: &str,
+        schema_description: &str,
+    ) -> Result<String, FMError> {
+        let wrapped = format!(
+            "{prompt}\n\n\
+             IMPORTANT: respond with VALID JSON ONLY (no prose, no markdown \
+             fences) that matches this schema:\n\n{schema_description}\n\n\
+             Your entire response must be parseable by JSON.parse()."
+        );
+        self.respond(&wrapped)
+    }
+
     /// Like [`respond`](Self::respond), but with explicit generation options.
     ///
     /// # Errors
