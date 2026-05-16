@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Added
+
+- Coverage-oriented schema helpers: `DynamicGenerationSchema::any_of_strings`, array `GenerationGuide` count/element helpers, `ResponseFormat::generating`, `Tool::generable`, and `ToolDefinition` / `ToolSpec` definition conversion.
+- Additional transcript ergonomics: collection-style helpers plus constructors for transcript entry types and segments.
+- A new non-model example (`examples/07_schema_surface.rs`) and feature-gated helper tests covering the new schema / tool surface.
+- `COVERAGE.md`, documenting the audited FoundationModels surface and the doc-name symbols that are absent from Xcode 26.2's public swiftinterface.
+
+### Changed
+
+- The Swift schema bridge now understands array count / element guides emitted from Rust.
+- `tests/api_coverage.rs` now asserts that the requested doc-only names are absent from the public SDK interface.
+
+### Notes
+
+- `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, and `Streaming` are not standalone public symbols in the macOS 26.2 `FoundationModels.swiftinterface`; they are tracked in `COVERAGE.md` as audited absences.
+
 ## [0.6.0]
 
 ### Added

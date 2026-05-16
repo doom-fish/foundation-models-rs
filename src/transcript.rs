@@ -50,6 +50,23 @@ impl Transcript {
         &self.entries
     }
 
+    /// Iterate over transcript entries.
+    pub fn iter(&self) -> impl Iterator<Item = &Entry> {
+        self.entries.iter()
+    }
+
+    /// Number of transcript entries.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the transcript is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
     /// Push a transcript entry.
     pub fn push(&mut self, entry: Entry) {
         self.entries.push(entry);
@@ -102,6 +119,24 @@ impl From<Vec<Entry>> for Transcript {
     }
 }
 
+impl<'a> IntoIterator for &'a Transcript {
+    type Item = &'a Entry;
+    type IntoIter = std::slice::Iter<'a, Entry>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.iter()
+    }
+}
+
+impl IntoIterator for Transcript {
+    type Item = Entry;
+    type IntoIter = std::vec::IntoIter<Entry>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
+
 /// One transcript entry.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Entry {
@@ -113,6 +148,18 @@ pub enum Entry {
 }
 
 impl Entry {
+    /// Best-effort identifier for this transcript entry.
+    #[must_use]
+    pub fn id(&self) -> Option<&str> {
+        match self {
+            Self::Instructions(entry) => entry.id.as_deref(),
+            Self::Prompt(entry) => entry.id.as_deref(),
+            Self::ToolCalls(entry) => entry.id.as_deref(),
+            Self::ToolOutput(entry) => Some(entry.id.as_str()),
+            Self::Response(entry) => entry.id.as_deref(),
+        }
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         let role = value
             .get("role")
@@ -154,6 +201,16 @@ pub struct TranscriptInstructions {
 }
 
 impl TranscriptInstructions {
+    /// Create an instructions entry.
+    #[must_use]
+    pub fn new(instructions: Instructions) -> Self {
+        Self {
+            id: None,
+            instructions,
+            tool_definitions: Vec::new(),
+        }
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         Ok(Self {
             id: value
@@ -205,6 +262,17 @@ pub struct TranscriptPrompt {
 }
 
 impl TranscriptPrompt {
+    /// Create a prompt entry.
+    #[must_use]
+    pub fn new(prompt: crate::prompt::Prompt) -> Self {
+        Self {
+            id: None,
+            prompt,
+            options: GenerationOptions::new(),
+            response_format: None,
+        }
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         Ok(Self {
             id: value
@@ -246,7 +314,54 @@ pub struct ToolCalls {
     pub calls: Vec<ToolCall>,
 }
 
+impl<'a> IntoIterator for &'a ToolCalls {
+    type Item = &'a ToolCall;
+    type IntoIter = std::slice::Iter<'a, ToolCall>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.calls.iter()
+    }
+}
+
+impl IntoIterator for ToolCalls {
+    type Item = ToolCall;
+    type IntoIter = std::vec::IntoIter<ToolCall>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.calls.into_iter()
+    }
+}
+
 impl ToolCalls {
+    /// Create a tool-calls entry.
+    #[must_use]
+    pub fn new(calls: Vec<ToolCall>) -> Self {
+        Self { id: None, calls }
+    }
+
+    /// Borrow the tool calls.
+    #[must_use]
+    pub fn calls(&self) -> &[ToolCall] {
+        &self.calls
+    }
+
+    /// Iterate over tool calls.
+    pub fn iter(&self) -> impl Iterator<Item = &ToolCall> {
+        self.calls.iter()
+    }
+
+    /// Number of tool calls in this entry.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.calls.len()
+    }
+
+    /// Whether this tool-call entry is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.calls.is_empty()
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         Ok(Self {
             id: value
@@ -281,6 +396,20 @@ pub struct ToolCall {
 }
 
 impl ToolCall {
+    /// Create a tool call.
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        tool_name: impl Into<String>,
+        arguments: GeneratedContent,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            tool_name: tool_name.into(),
+            arguments,
+        }
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         let arguments = value
             .get("arguments")
@@ -320,6 +449,22 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
+    /// Create a tool output entry.
+    #[must_use]
+    pub fn new(
+        id: impl Into<String>,
+        tool_name: impl Into<String>,
+        segments: Vec<Segment>,
+    ) -> Self {
+        let id = id.into();
+        Self {
+            id: id.clone(),
+            tool_name: tool_name.into(),
+            tool_call_id: Some(id),
+            segments,
+        }
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         Ok(Self {
             id: value
@@ -360,6 +505,16 @@ pub struct TranscriptResponse {
 }
 
 impl TranscriptResponse {
+    /// Create a response entry.
+    #[must_use]
+    pub fn new(segments: Vec<Segment>) -> Self {
+        Self {
+            id: None,
+            asset_ids: Vec::new(),
+            segments,
+        }
+    }
+
     fn from_json_value(value: &Value) -> Result<Self, FMError> {
         Ok(Self {
             id: value

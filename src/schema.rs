@@ -142,11 +142,17 @@ pub enum DynamicGenerationSchema {
         item: Box<DynamicGenerationSchema>,
         minimum_elements: Option<usize>,
         maximum_elements: Option<usize>,
+        guides: Vec<GenerationGuide>,
     },
     AnyOf {
         name: String,
         description: Option<String>,
         choices: Vec<DynamicGenerationSchema>,
+    },
+    AnyOfStrings {
+        name: String,
+        description: Option<String>,
+        choices: Vec<String>,
     },
     String {
         description: Option<String>,
@@ -254,6 +260,7 @@ impl DynamicGenerationSchema {
             item: Box::new(item),
             minimum_elements: None,
             maximum_elements: None,
+            guides: Vec::new(),
         }
     }
 
@@ -273,6 +280,19 @@ impl DynamicGenerationSchema {
         }
     }
 
+    /// Create a named union of constant string choices.
+    #[must_use]
+    pub fn any_of_strings(
+        name: impl Into<String>,
+        choices: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self::AnyOfStrings {
+            name: name.into(),
+            description: None,
+            choices: choices.into_iter().map(Into::into).collect(),
+        }
+    }
+
     /// Attach a description.
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
@@ -281,6 +301,9 @@ impl DynamicGenerationSchema {
                 description: slot, ..
             }
             | Self::AnyOf {
+                description: slot, ..
+            }
+            | Self::AnyOfStrings {
                 description: slot, ..
             }
             | Self::String {
@@ -333,7 +356,7 @@ impl DynamicGenerationSchema {
         self
     }
 
-    /// Attach primitive guides.
+    /// Attach FoundationModels generation guides.
     #[must_use]
     pub fn with_guides(mut self, guides: impl IntoIterator<Item = GenerationGuide>) -> Self {
         let guides: Vec<_> = guides.into_iter().collect();
@@ -342,10 +365,11 @@ impl DynamicGenerationSchema {
             | Self::Integer { guides: slot, .. }
             | Self::Float { guides: slot, .. }
             | Self::Number { guides: slot, .. }
-            | Self::Decimal { guides: slot, .. } => *slot = guides,
+            | Self::Decimal { guides: slot, .. }
+            | Self::Array { guides: slot, .. } => *slot = guides,
             Self::Object { .. }
-            | Self::Array { .. }
             | Self::AnyOf { .. }
+            | Self::AnyOfStrings { .. }
             | Self::Boolean { .. }
             | Self::GeneratedContent { .. }
             | Self::Reference { .. } => {}
@@ -359,55 +383,33 @@ impl DynamicGenerationSchema {
                 name,
                 description,
                 properties,
-            } => {
-                let property_map = properties
-                    .iter()
-                    .map(|(property_name, property)| {
-                        (property_name.clone(), property.to_json_value())
-                    })
-                    .collect::<Map<String, Value>>();
-                let mut map = Map::new();
-                map.insert("type".into(), Value::String("object".into()));
-                map.insert("name".into(), Value::String(name.clone()));
-                if let Some(description) = description {
-                    map.insert("description".into(), Value::String(description.clone()));
-                }
-                map.insert("properties".into(), Value::Object(property_map));
-                Value::Object(map)
-            }
+            } => object_schema_json(name, description, properties),
             Self::Array {
                 item,
                 minimum_elements,
                 maximum_elements,
-            } => {
-                let mut map = Map::new();
-                map.insert("type".into(), Value::String("array".into()));
-                map.insert("items".into(), item.to_json_value());
-                if let Some(minimum_elements) = minimum_elements {
-                    map.insert("min".into(), Value::from(*minimum_elements));
-                }
-                if let Some(maximum_elements) = maximum_elements {
-                    map.insert("max".into(), Value::from(*maximum_elements));
-                }
-                Value::Object(map)
-            }
+                guides,
+            } => array_schema_json(item, *minimum_elements, *maximum_elements, guides),
             Self::AnyOf {
                 name,
                 description,
                 choices,
-            } => {
-                let mut map = Map::new();
-                map.insert("type".into(), Value::String("any_of".into()));
-                map.insert("name".into(), Value::String(name.clone()));
-                if let Some(description) = description {
-                    map.insert("description".into(), Value::String(description.clone()));
-                }
-                map.insert(
-                    "choices".into(),
-                    Value::Array(choices.iter().map(Self::to_json_value).collect()),
-                );
-                Value::Object(map)
-            }
+            } => named_schema_json(
+                "any_of",
+                name,
+                description,
+                Value::Array(choices.iter().map(Self::to_json_value).collect()),
+            ),
+            Self::AnyOfStrings {
+                name,
+                description,
+                choices,
+            } => named_schema_json(
+                "any_of",
+                name,
+                description,
+                Value::Array(choices.iter().cloned().map(Value::String).collect()),
+            ),
             Self::String {
                 description,
                 guides,
@@ -435,6 +437,65 @@ impl DynamicGenerationSchema {
             Self::Reference { name } => json!({ "$ref": name }),
         }
     }
+}
+
+fn named_schema_json(
+    kind: &str,
+    name: &str,
+    description: &Option<String>,
+    choices: Value,
+) -> Value {
+    let mut map = Map::new();
+    map.insert("type".into(), Value::String(kind.into()));
+    map.insert("name".into(), Value::String(name.to_string()));
+    if let Some(description) = description {
+        map.insert("description".into(), Value::String(description.clone()));
+    }
+    map.insert("choices".into(), choices);
+    Value::Object(map)
+}
+
+fn object_schema_json(
+    name: &str,
+    description: &Option<String>,
+    properties: &BTreeMap<String, DynamicGenerationProperty>,
+) -> Value {
+    let property_map = properties
+        .iter()
+        .map(|(property_name, property)| (property_name.clone(), property.to_json_value()))
+        .collect::<Map<String, Value>>();
+    let mut map = Map::new();
+    map.insert("type".into(), Value::String("object".into()));
+    map.insert("name".into(), Value::String(name.to_string()));
+    if let Some(description) = description {
+        map.insert("description".into(), Value::String(description.clone()));
+    }
+    map.insert("properties".into(), Value::Object(property_map));
+    Value::Object(map)
+}
+
+fn array_schema_json(
+    item: &DynamicGenerationSchema,
+    minimum_elements: Option<usize>,
+    maximum_elements: Option<usize>,
+    guides: &[GenerationGuide],
+) -> Value {
+    let mut map = Map::new();
+    map.insert("type".into(), Value::String("array".into()));
+    map.insert("items".into(), item.to_json_value());
+    if let Some(minimum_elements) = minimum_elements {
+        map.insert("min".into(), Value::from(minimum_elements));
+    }
+    if let Some(maximum_elements) = maximum_elements {
+        map.insert("max".into(), Value::from(maximum_elements));
+    }
+    if !guides.is_empty() {
+        map.insert(
+            "guides".into(),
+            Value::Array(guides.iter().map(GenerationGuide::to_json_value).collect()),
+        );
+    }
+    Value::Object(map)
 }
 
 /// A property in a dynamic object schema.
@@ -502,6 +563,11 @@ pub enum GenerationGuide {
     MinimumDecimal(String),
     MaximumDecimal(String),
     RangeDecimal(String, String),
+    MinimumCount(usize),
+    MaximumCount(usize),
+    CountRange(usize, usize),
+    CountExact(usize),
+    Element(Box<GenerationGuide>),
 }
 
 impl GenerationGuide {
@@ -580,6 +646,31 @@ impl GenerationGuide {
         Self::RangeDecimal(minimum.into(), maximum.into())
     }
 
+    #[must_use]
+    pub const fn minimum_count(count: usize) -> Self {
+        Self::MinimumCount(count)
+    }
+
+    #[must_use]
+    pub const fn maximum_count(count: usize) -> Self {
+        Self::MaximumCount(count)
+    }
+
+    #[must_use]
+    pub const fn count_range(minimum: usize, maximum: usize) -> Self {
+        Self::CountRange(minimum, maximum)
+    }
+
+    #[must_use]
+    pub const fn count(count: usize) -> Self {
+        Self::CountExact(count)
+    }
+
+    #[must_use]
+    pub fn element(guide: GenerationGuide) -> Self {
+        Self::Element(Box::new(guide))
+    }
+
     fn to_json_value(&self) -> Value {
         match self {
             Self::StringConstant(value) => json!({ "kind": "constant", "value": value }),
@@ -605,6 +696,13 @@ impl GenerationGuide {
             Self::RangeDecimal(minimum, maximum) => {
                 json!({ "kind": "range", "min": minimum, "max": maximum })
             }
+            Self::MinimumCount(count) => json!({ "kind": "minimum_count", "value": count }),
+            Self::MaximumCount(count) => json!({ "kind": "maximum_count", "value": count }),
+            Self::CountRange(minimum, maximum) => {
+                json!({ "kind": "count", "min": minimum, "max": maximum })
+            }
+            Self::CountExact(count) => json!({ "kind": "count", "value": count }),
+            Self::Element(guide) => json!({ "kind": "element", "guide": guide.to_json_value() }),
         }
     }
 }

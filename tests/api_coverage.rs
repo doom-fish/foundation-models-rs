@@ -31,10 +31,24 @@ fn sdk_root() -> PathBuf {
 
 fn read_swiftinterface() -> String {
     let sdk = sdk_root();
-    let path = sdk.join(
-        "System/Library/Frameworks/FoundationModels.framework/\
-         Modules/FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface",
-    );
+    let candidates = [
+        sdk.join(
+            "System/Library/Frameworks/FoundationModels.framework/\
+             Versions/A/Modules/FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface",
+        ),
+        sdk.join(
+            "System/Library/Frameworks/FoundationModels.framework/\
+             Versions/A/Modules/FoundationModels.swiftmodule/x86_64-apple-macos.swiftinterface",
+        ),
+        sdk.join(
+            "System/Library/Frameworks/FoundationModels.framework/\
+             Modules/FoundationModels.swiftmodule/arm64e-apple-macos.swiftinterface",
+        ),
+    ];
+    let path = candidates
+        .into_iter()
+        .find(|path| path.exists())
+        .expect("can't locate FoundationModels.swiftinterface");
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("can't read {}: {e}", path.display()))
 }
 
@@ -340,4 +354,24 @@ fn response_stream_snapshot_coverage() {
     }
     .run()
     .unwrap();
+}
+
+#[test]
+fn requested_doc_names_absent_from_sdk() {
+    let si = read_swiftinterface();
+    for name in [
+        "PromptTag",
+        "Conversation",
+        "ToolCallingMode",
+        "SystemPrompt",
+        "Examples",
+        "LanguageModelInputContent",
+        "LanguageModelOutputContent",
+        "Streaming",
+    ] {
+        assert!(
+            !si.contains(name),
+            "{name} unexpectedly appears in FoundationModels.swiftinterface"
+        );
+    }
 }

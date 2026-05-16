@@ -1,6 +1,6 @@
 [package]
 name = "foundation-models"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/foundation-models-rs"
@@ -21,6 +21,7 @@ include = [
     "README.md",
     "LICENSE-*",
     "CHANGELOG.md",
+    "COVERAGE.md",
 ]
 
 [lints.rust]
@@ -87,6 +88,10 @@ required-features = ["macos_26_0", "async"]
 
 [[example]]
 name = "06_smoke"
+required-features = ["macos_26_0"]
+
+[[example]]
+name = "07_schema_surface"
 required-features = ["macos_26_0"]
 
 [profile.release]

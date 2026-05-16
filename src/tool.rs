@@ -9,11 +9,11 @@ use std::sync::Arc;
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use crate::content::GeneratedContent;
+use crate::content::{FromGeneratedContent, GeneratedContent};
 use crate::error::FMError;
 use crate::ffi;
-use crate::prompt::{Prompt, ToPrompt};
-use crate::schema::GenerationSchema;
+use crate::prompt::{Prompt, ToPrompt, ToolDefinition};
+use crate::schema::{Generable, GenerationSchema};
 
 fn swift_dup_string(value: &str) -> *mut c_char {
     let c_string = CString::new(value).expect("bridge strings must not contain interior NUL bytes");
@@ -69,6 +69,45 @@ impl Tool {
         })
     }
 
+    /// Create a tool whose argument schema is inferred from a [`Generable`] type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if `Args` cannot produce a generation schema.
+    pub fn generable<Args, Output, F>(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        handler: F,
+    ) -> Result<Self, FMError>
+    where
+        Args: FromGeneratedContent + Generable + Send + 'static,
+        Output: ToPrompt,
+        F: Fn(Args) -> Result<Output, FMError> + Send + Sync + 'static,
+    {
+        Ok(Self::new(
+            name,
+            description,
+            Args::generation_schema()?,
+            move |arguments| {
+                let decoded = Args::from_generated_content(&arguments)?;
+                let output = handler(decoded)?;
+                Ok(ToolOutput::from_prompt(output.to_prompt()?))
+            },
+        ))
+    }
+
+    /// Tool metadata as exposed to FoundationModels.
+    #[must_use]
+    pub const fn spec(&self) -> &ToolSpec {
+        &self.spec
+    }
+
+    /// Convert this tool into a transcript tool definition.
+    #[must_use]
+    pub fn definition(&self) -> ToolDefinition {
+        self.spec.definition()
+    }
+
     /// Control whether the schema is included in the model's tool instructions.
     #[must_use]
     pub fn with_schema_in_instructions(mut self, includes: bool) -> Self {
@@ -90,6 +129,18 @@ pub struct ToolSpec {
     pub description: String,
     pub parameters: GenerationSchema,
     pub includes_schema_in_instructions: bool,
+}
+
+impl ToolSpec {
+    /// Convert this tool specification into a transcript tool definition.
+    #[must_use]
+    pub fn definition(&self) -> ToolDefinition {
+        ToolDefinition::new(
+            self.name.clone(),
+            self.description.clone(),
+            self.parameters.clone(),
+        )
+    }
 }
 
 /// A tool output converted into a prompt representation.

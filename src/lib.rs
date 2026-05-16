@@ -68,7 +68,7 @@
     clippy::significant_drop_in_scrutinee,
     clippy::struct_field_names,
     clippy::unnecessary_map_or,
-    clippy::use_self,
+    clippy::use_self
 )]
 
 pub mod content;

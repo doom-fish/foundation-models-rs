@@ -7,9 +7,10 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 - **Sessions and multi-turn chat** — create, restore, inspect, and persist `LanguageModelSession`s
 - **Streaming** — text deltas and structured-generation snapshots
 - **Tool calling** — register Rust callbacks as `FoundationModels` `Tool`s
-- **Structured generation** — JSON-schema validation, dynamic schemas, and Rust `Generable` traits
+- **Structured generation** — JSON-schema validation, dynamic schemas, string-choice schemas, array guides, and Rust `Generable` traits
 - **System model configuration** — availability, use cases, guardrails, locales, and adapter handles
 - **Transcript support** — typed transcript inspection plus raw JSON round-tripping
+- **Response / tool definitions** — `ResponseFormat::generating`, inferred `Tool::generable`, and transcript `ToolDefinition` helpers
 - **Feedback attachments** — full `LanguageModelFeedback` issue/sentiment support
 
 ## Requirements
@@ -23,7 +24,7 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.6.0", features = ["macos_26_0"] }
+foundation-models = { version = "0.7.0", features = ["macos_26_0"] }
 ```
 
 ## Quick start
@@ -113,10 +114,38 @@ println!("{}", response.json_string()?);
 # }
 ```
 
+## Coverage-oriented helpers
+
+```rust,no_run
+use foundation_models::prelude::*;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let schema = GenerationSchema::from_dynamic(
+    DynamicGenerationSchema::array_of(DynamicGenerationSchema::string()).with_guides([
+        GenerationGuide::minimum_count(1),
+        GenerationGuide::maximum_count(3),
+        GenerationGuide::element(GenerationGuide::string_pattern("^[a-z]+$")),
+    ]),
+    [],
+)?;
+
+let response_format = ResponseFormat::generating::<GeneratedContent>()?;
+let tool = Tool::generable("echo", "Echo structured content", |args: GeneratedContent| {
+    Ok(args.json_string()?)
+})?;
+
+println!("{}", schema.json_schema());
+println!("{}", response_format.name());
+println!("{}", tool.definition().name);
+# Ok(())
+# }
+```
+
 ## Smoke example
 
 ```bash
 cargo run --example 06_smoke --features macos_26_0
+cargo run --example 07_schema_surface --features macos_26_0
 ```
 
 ## Notes
@@ -124,6 +153,7 @@ cargo run --example 06_smoke --features macos_26_0
 - Swift-only compile-time macros such as `@Generable` and `@Guide` are exposed as Rust runtime traits/builders (`Generable`, `GenerationGuide`, `DynamicGenerationSchema`).
 - `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` is not wrapped because it depends on `BackgroundAssets.AssetPack`, which this crate does not expose.
 - `GenerationID` remains opaque in the Apple SDK; generated-content IDs are surfaced as best-effort string metadata.
+- Xcode 26.2's `FoundationModels.swiftinterface` does **not** expose standalone `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, or `Streaming` symbols; see [`COVERAGE.md`](COVERAGE.md) for the audited matrix.
 
 ## License
 

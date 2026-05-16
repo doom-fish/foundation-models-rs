@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use crate::content::GeneratedContent;
 use crate::error::FMError;
-use crate::schema::GenerationSchema;
+use crate::schema::{Generable, GenerationSchema};
 
 /// A FoundationModels prompt.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -185,20 +185,13 @@ impl Segment {
     /// Create a text segment.
     #[must_use]
     pub fn text(text: impl Into<String>) -> Self {
-        Self::Text(TextSegment {
-            id: None,
-            text: text.into(),
-        })
+        Self::Text(TextSegment::new(text))
     }
 
     /// Create a structured segment.
     #[must_use]
     pub fn structure(source: impl Into<String>, content: GeneratedContent) -> Self {
-        Self::Structure(StructuredSegment {
-            id: None,
-            source: source.into(),
-            content,
-        })
+        Self::Structure(StructuredSegment::new(source, content))
     }
 
     pub(crate) fn to_bridge_value(&self) -> Value {
@@ -223,12 +216,35 @@ pub struct TextSegment {
     pub text: String,
 }
 
+impl TextSegment {
+    /// Create a text segment.
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            id: None,
+            text: text.into(),
+        }
+    }
+}
+
 /// A structured transcript segment.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StructuredSegment {
     pub id: Option<String>,
     pub source: String,
     pub content: GeneratedContent,
+}
+
+impl StructuredSegment {
+    /// Create a structured segment.
+    #[must_use]
+    pub fn new(source: impl Into<String>, content: GeneratedContent) -> Self {
+        Self {
+            id: None,
+            source: source.into(),
+            content,
+        }
+    }
 }
 
 /// A transcript response format.
@@ -243,6 +259,18 @@ impl ResponseFormat {
     #[must_use]
     pub fn json_schema(schema: GenerationSchema) -> Self {
         Self { name: None, schema }
+    }
+
+    /// Create a response format from a [`Generable`] Rust type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the type cannot produce a generation schema.
+    pub fn generating<T>() -> Result<Self, FMError>
+    where
+        T: Generable,
+    {
+        Ok(Self::json_schema(T::generation_schema()?))
     }
 
     pub(crate) fn from_transcript_json_value(value: &Value) -> Result<Self, FMError> {
@@ -276,6 +304,15 @@ impl ResponseFormat {
         self
     }
 
+    /// Display name FoundationModels associates with this response format.
+    #[must_use]
+    pub fn name(&self) -> String {
+        self.name
+            .clone()
+            .or_else(|| self.schema.name())
+            .unwrap_or_else(|| "GeneratedContent".to_string())
+    }
+
     /// The underlying schema.
     #[must_use]
     pub const fn schema(&self) -> &GenerationSchema {
@@ -288,11 +325,7 @@ impl ResponseFormat {
         json!({
             "type": "jsonSchema",
             "jsonSchema": {
-                "name": self
-                    .name
-                    .clone()
-                    .or_else(|| self.schema.name())
-                    .unwrap_or_else(|| "GeneratedContent".to_string()),
+                "name": self.name(),
                 "schema": schema_value,
             }
         })

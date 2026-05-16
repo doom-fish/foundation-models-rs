@@ -39,12 +39,60 @@ func bridgeBuildDynamicSchema(from json: Any, name: String) throws -> DynamicGen
             }
         return DynamicGenerationSchema(name: schemaName, description: description, properties: properties)
     case "array":
-        let itemJSON = dict["items"] ?? ["type": "string"]
+        var itemJSON: Any = dict["items"] ?? ["type": "string"]
+        var minimumElements = dict["min"] as? Int
+        var maximumElements = dict["max"] as? Int
+        if let guides = dict["guides"] as? [Any] {
+            for guideValue in guides {
+                let guide = try guideDictionary(guideValue)
+                switch guide["kind"] as? String {
+                case "minimum_count":
+                    if let count = guide["value"] as? Int {
+                        minimumElements = count
+                    }
+                case "maximum_count":
+                    if let count = guide["value"] as? Int {
+                        maximumElements = count
+                    }
+                case "count":
+                    if let count = guide["value"] as? Int {
+                        minimumElements = count
+                        maximumElements = count
+                    } else {
+                        if let minimum = guide["min"] as? Int {
+                            minimumElements = minimum
+                        }
+                        if let maximum = guide["max"] as? Int {
+                            maximumElements = maximum
+                        }
+                    }
+                case "element":
+                    guard let nestedGuide = guide["guide"] else {
+                        throw NSError(domain: "fm-bridge", code: -9, userInfo: [
+                            NSLocalizedDescriptionKey: "element guides must include a nested guide"
+                        ])
+                    }
+                    guard var itemDict = itemJSON as? [String: Any] else {
+                        throw NSError(domain: "fm-bridge", code: -10, userInfo: [
+                            NSLocalizedDescriptionKey: "array items must be schema objects"
+                        ])
+                    }
+                    var itemGuides = (itemDict["guides"] as? [Any]) ?? []
+                    itemGuides.append(nestedGuide)
+                    itemDict["guides"] = itemGuides
+                    itemJSON = itemDict
+                default:
+                    throw NSError(domain: "fm-bridge", code: -11, userInfo: [
+                        NSLocalizedDescriptionKey: "unsupported array guide"
+                    ])
+                }
+            }
+        }
         let itemSchema = try bridgeBuildDynamicSchema(from: itemJSON, name: "Item")
         return DynamicGenerationSchema(
             arrayOf: itemSchema,
-            minimumElements: dict["min"] as? Int,
-            maximumElements: dict["max"] as? Int
+            minimumElements: minimumElements,
+            maximumElements: maximumElements
         )
     case "any_of":
         let choices = (dict["choices"] as? [Any]) ?? []
