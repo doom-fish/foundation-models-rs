@@ -26,7 +26,7 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.7.1", features = ["macos_26_0"] }
+foundation-models = { version = "0.7.2", features = ["macos_26_0"] }
 ```
 
 ## Quick start
