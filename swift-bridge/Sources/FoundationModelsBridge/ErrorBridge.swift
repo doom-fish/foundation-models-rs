@@ -109,6 +109,32 @@ func toolCallErrorPayload(_ error: LanguageModelSession.ToolCallError) -> Bridge
 }
 
 @available(macOS 26.0, *)
+func assetErrorPayload(_ error: SystemLanguageModel.Adapter.AssetError) -> BridgeErrorPayload {
+    let message = error.localizedDescription
+    let recoverySuggestion = error.recoverySuggestion
+    
+    var context: BridgeErrorContext? = nil
+    switch error {
+    case .invalidAsset(let errorContext),
+         .invalidAdapterName(let errorContext),
+         .compatibleAdapterNotFound(let errorContext):
+        context = BridgeErrorContext(debugDescription: errorContext.debugDescription)
+    @unknown default:
+        break
+    }
+    
+    return BridgeErrorPayload(
+        message: message,
+        recoverySuggestion: recoverySuggestion,
+        failureReason: nil,
+        generationErrorContext: nil,
+        refusal: nil,
+        toolCallError: nil,
+        schemaErrorContext: context
+    )
+}
+
+@available(macOS 26.0, *)
 func encodedTextResponse(_ response: LanguageModelSession.Response<String>) throws -> String {
     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
     let payload = BridgeTextResponse(

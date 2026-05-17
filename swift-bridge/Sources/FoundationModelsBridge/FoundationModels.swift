@@ -398,16 +398,15 @@ func mapError(_ error: Error) -> (Int32, String) {
         return (FM_UNKNOWN, encodeErrorPayload(schemaErrorPayload(schemaError)))
     }
     if let adapterError = error as? SystemLanguageModel.Adapter.AssetError {
-        let message = adapterError.localizedDescription
         switch adapterError {
         case .invalidAsset:
-            return (FM_ADAPTER_INVALID_ASSET, plainPayload(message))
+            return (FM_ADAPTER_INVALID_ASSET, encodeErrorPayload(assetErrorPayload(adapterError)))
         case .invalidAdapterName:
-            return (FM_ADAPTER_INVALID_NAME, plainPayload(message))
+            return (FM_ADAPTER_INVALID_NAME, encodeErrorPayload(assetErrorPayload(adapterError)))
         case .compatibleAdapterNotFound:
-            return (FM_ADAPTER_COMPATIBLE_NOT_FOUND, plainPayload(message))
+            return (FM_ADAPTER_COMPATIBLE_NOT_FOUND, encodeErrorPayload(assetErrorPayload(adapterError)))
         @unknown default:
-            return (FM_UNKNOWN, plainPayload(message))
+            return (FM_UNKNOWN, plainPayload(adapterError.localizedDescription))
         }
     }
     let nsError = error as NSError

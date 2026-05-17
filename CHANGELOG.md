@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.3]
+
+### Changed
+
+- Adapter error surface now fully bridged: `SystemLanguageModel.Adapter.AssetError.Context` (with `debugDescription` property and `init` constructor) and `recoverySuggestion` property are now extracted and preserved across the FFI boundary via the `assetErrorPayload()` Swift bridge function.
+- `COVERAGE_AUDIT_V2.md` now reflects 100% audited coverage (0 gaps). The single remaining unadjustable symbol is `SystemLanguageModel.Adapter.isCompatible(_:)`, which depends on the external `BackgroundAssets.AssetPack` type and is documented as EXEMPT with a framework-dependency citation.
+
 ## [0.7.2]
 
 ### Added
