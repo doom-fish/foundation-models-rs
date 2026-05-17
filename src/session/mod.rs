@@ -3,6 +3,7 @@
 use core::ffi::{c_char, c_void};
 use core::ptr;
 use std::ffi::CString;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
@@ -1072,6 +1073,10 @@ pub enum StreamEvent<'a> {
 
 // ---------- internal callback plumbing ----------
 
+// SAFETY: `context` is a `Box<mpsc::Sender<...>>` raw pointer created by
+// `request_response` / `request_text_response_with`. Swift calls this callback
+// exactly once, so there is no double-free risk. `response` and `error` are
+// C strings owned by the Swift bridge and only valid for this call.
 unsafe extern "C" fn respond_trampoline(
     context: *mut c_void,
     response: *mut c_char,
@@ -1098,6 +1103,11 @@ struct StreamState {
     done_tx: Mutex<Option<mpsc::Sender<Result<(), FMError>>>>,
 }
 
+// SAFETY: `context` is a `Arc<StreamState>` raw pointer passed via
+// `Arc::into_raw`. We reconstruct it with `Arc::from_raw` on every call and
+// immediately `mem::forget` a clone so the count stays ≥ 1 until the
+// terminal call (done=true or error). `chunk` is a Swift-owned C string valid
+// only for the duration of this call.
 unsafe extern "C" fn json_text_stream_trampoline(
     context: *mut c_void,
     chunk: *mut c_char,
@@ -1131,9 +1141,11 @@ unsafe extern "C" fn json_text_stream_trampoline(
                 )
             })
             .unwrap_or_else(|| crate::error::from_swift(status, ptr::null_mut()));
-        let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
-        callback(StreamEvent::Error(err.clone()));
-        drop(callback);
+        {
+            let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
+            // Catch panics so they don't unwind across the FFI boundary (UB).
+            let _ = catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Error(err.clone()))));
+        }
         if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
             let _ = tx.send(Err(err));
         }
@@ -1145,15 +1157,33 @@ unsafe extern "C" fn json_text_stream_trampoline(
     if let Some(payload) = payload {
         match serde_json::from_str::<BridgeTextStreamSnapshot>(&payload) {
             Ok(snapshot) if !snapshot.delta.is_empty() => {
-                let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
-                callback(StreamEvent::Chunk(&snapshot.delta));
+                let chunk_panicked = {
+                    let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
+                    // Catch panics so they don't unwind across the FFI boundary.
+                    catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Chunk(&snapshot.delta))))
+                        .is_err()
+                };
+                if chunk_panicked {
+                    if let Some(tx) =
+                        state.done_tx.lock().expect("done_tx mutex poisoned").take()
+                    {
+                        let _ = tx.send(Err(FMError::Unknown {
+                            code: ffi::status::UNKNOWN,
+                            message: "stream callback panicked".into(),
+                        }));
+                    }
+                    drop(Arc::from_raw(Arc::as_ptr(&state)));
+                    drop(state);
+                    return;
+                }
             }
             Ok(_) => {}
             Err(error) => {
                 let err = FMError::DecodingFailure(error.to_string());
-                let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
-                callback(StreamEvent::Error(err.clone()));
-                drop(callback);
+                {
+                    let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
+                    let _ = catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Error(err.clone()))));
+                }
                 if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
                     let _ = tx.send(Err(err));
                 }
@@ -1165,9 +1195,10 @@ unsafe extern "C" fn json_text_stream_trampoline(
     }
 
     if done {
-        let mut callback = state.on_chunk.lock().expect("user callback mutex poisoned");
-        callback(StreamEvent::Done);
-        drop(callback);
+        {
+            let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
+            let _ = catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Done)));
+        }
         if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
             let _ = tx.send(Ok(()));
         }
@@ -1183,6 +1214,9 @@ struct StructuredStreamState {
     done_tx: Mutex<Option<mpsc::Sender<Result<(), FMError>>>>,
 }
 
+// SAFETY: Same invariants as `json_text_stream_trampoline` above, but for
+// `StructuredStreamState`.
+#[allow(clippy::too_many_lines)]
 unsafe extern "C" fn structured_stream_trampoline(
     context: *mut c_void,
     chunk: *mut c_char,
@@ -1216,12 +1250,16 @@ unsafe extern "C" fn structured_stream_trampoline(
                 )
             })
             .unwrap_or_else(|| crate::error::from_swift(status, ptr::null_mut()));
-        let mut callback = state
-            .on_event
-            .lock()
-            .expect("structured callback mutex poisoned");
-        callback(StructuredStreamEvent::Error(err.clone()));
-        drop(callback);
+        {
+            let mut cb = state
+                .on_event
+                .lock()
+                .expect("structured callback mutex poisoned");
+            // Catch panics so they don't unwind across the FFI boundary (UB).
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                cb(StructuredStreamEvent::Error(err.clone()));
+            }));
+        }
         if let Some(tx) = state
             .done_tx
             .lock()
@@ -1240,12 +1278,15 @@ unsafe extern "C" fn structured_stream_trampoline(
             Ok(snapshot) => snapshot,
             Err(error) => {
                 let err = FMError::DecodingFailure(error.to_string());
-                let mut callback = state
-                    .on_event
-                    .lock()
-                    .expect("structured callback mutex poisoned");
-                callback(StructuredStreamEvent::Error(err.clone()));
-                drop(callback);
+                {
+                    let mut cb = state
+                        .on_event
+                        .lock()
+                        .expect("structured callback mutex poisoned");
+                    let _ = catch_unwind(AssertUnwindSafe(|| {
+                        cb(StructuredStreamEvent::Error(err.clone()));
+                    }));
+                }
                 if let Some(tx) = state
                     .done_tx
                     .lock()
@@ -1259,24 +1300,45 @@ unsafe extern "C" fn structured_stream_trampoline(
                 return;
             }
         };
-        let mut callback = state
-            .on_event
-            .lock()
-            .expect("structured callback mutex poisoned");
-        callback(StructuredStreamEvent::Snapshot(StructuredStreamSnapshot {
+        let snapshot_event = StructuredStreamEvent::Snapshot(StructuredStreamSnapshot {
             content_json: snapshot.content.json,
             raw_content_json: snapshot.raw_content.json,
             is_complete: snapshot.is_complete,
-        }));
+        });
+        let snapshot_panicked = {
+            let mut cb = state
+                .on_event
+                .lock()
+                .expect("structured callback mutex poisoned");
+            // Catch panics so they don't unwind across the FFI boundary.
+            catch_unwind(AssertUnwindSafe(|| cb(snapshot_event))).is_err()
+        };
+        if snapshot_panicked {
+            if let Some(tx) = state
+                .done_tx
+                .lock()
+                .expect("structured done_tx mutex poisoned")
+                .take()
+            {
+                let _ = tx.send(Err(FMError::Unknown {
+                    code: ffi::status::UNKNOWN,
+                    message: "stream callback panicked".into(),
+                }));
+            }
+            drop(Arc::from_raw(Arc::as_ptr(&state)));
+            drop(state);
+            return;
+        }
     }
 
     if done {
-        let mut callback = state
-            .on_event
-            .lock()
-            .expect("structured callback mutex poisoned");
-        callback(StructuredStreamEvent::Done);
-        drop(callback);
+        {
+            let mut cb = state
+                .on_event
+                .lock()
+                .expect("structured callback mutex poisoned");
+            let _ = catch_unwind(AssertUnwindSafe(|| cb(StructuredStreamEvent::Done)));
+        }
         if let Some(tx) = state
             .done_tx
             .lock()

@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.1]
+
+### Fixed
+
+- **Panic safety in stream trampolines** (`json_text_stream_trampoline` and
+  `structured_stream_trampoline`): user-supplied callbacks were invoked without
+  `catch_unwind`, which would allow a panic to unwind across the FFI boundary
+  (undefined behaviour). Each callback invocation is now wrapped with
+  `std::panic::catch_unwind(AssertUnwindSafe(...))`. A mid-stream callback panic
+  now terminates the stream cleanly (sends an `FMError::Unknown` to `done_tx`)
+  instead of crossing the C boundary.
+- **SAFETY comments** added to all `unsafe extern "C"` trampoline functions
+  (`respond_trampoline`, `json_text_stream_trampoline`,
+  `structured_stream_trampoline`, `schema_callback_trampoline`,
+  `adapter_compile_trampoline`, `tool_callback_trampoline`) documenting the
+  pointer provenance and lifetime invariants.
+- **`doom-fish-utils` version range** widened from `"0.1"` to `">=0.1, <0.3"`
+  to allow the next minor release without a breaking lockfile bump.
+
 ## [0.8.0]
 
 ### Added

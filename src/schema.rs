@@ -732,6 +732,10 @@ pub trait Generable: Sized + FromGeneratedContent + ToGeneratedContent {
     fn generation_schema() -> Result<GenerationSchema, FMError>;
 }
 
+// SAFETY: `context` is a `Box<mpsc::Sender<...>>` raw pointer created by
+// `GenerationSchema::compile`. Swift calls this callback exactly once, so
+// there is no double-free risk. `response` and `error` are C strings owned
+// by the Swift bridge and only valid for this call.
 unsafe extern "C" fn schema_callback_trampoline(
     context: *mut c_void,
     response: *mut c_char,

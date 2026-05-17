@@ -250,6 +250,12 @@ impl ToolRegistry {
     }
 }
 
+// SAFETY: `context` is a shared reference to a `ToolRegistry` whose lifetime
+// is managed by `LanguageModelSession` (via `Arc<ToolRegistry>`). The session
+// must outlive all Swift callbacks, which it does because the session object
+// owns the registry and is not dropped until after the response completes.
+// `tool_name` and `arguments_json` are non-null UTF-8 C strings owned by the
+// Swift bridge and valid for the duration of this call.
 pub(crate) unsafe extern "C" fn tool_callback_trampoline(
     context: *mut c_void,
     tool_name: *const c_char,

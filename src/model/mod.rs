@@ -317,6 +317,10 @@ impl core::fmt::Debug for Adapter {
     }
 }
 
+// SAFETY: `context` is a `Box<mpsc::Sender<Result<(), FMError>>>` raw pointer
+// created by `Adapter::compile`. Swift calls this callback exactly once, so
+// there is no double-free risk. `response` and `error` are C strings owned
+// by the Swift bridge and only valid for this call.
 unsafe extern "C" fn adapter_compile_trampoline(
     context: *mut c_void,
     response: *mut c_char,
