@@ -19,7 +19,7 @@ fn transcript_round_trips_all_entry_kinds() -> Result<(), FMError> {
     let prompt_content = GeneratedContent::from_value(json!({ "topic": "weather" }))?;
     let mut prompt_entry = TranscriptPrompt::new(Prompt::from(vec![
         Segment::text("What is the forecast?"),
-        Segment::structure("UserContext", prompt_content.clone()),
+        Segment::structure("UserContext", prompt_content),
     ]));
     prompt_entry.id = Some("prompt-1".into());
     prompt_entry.options = GenerationOptions::new()

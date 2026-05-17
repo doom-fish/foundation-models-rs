@@ -1,6 +1,6 @@
 [package]
 name = "foundation-models"
-version = "0.7.3"
+version = "0.8.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/foundation-models-rs"
@@ -42,7 +42,7 @@ default = []
 cargo-clippy = []
 
 # Async support (executor-agnostic, works with any async runtime)
-async = []
+async = ["doom-fish-utils"]
 
 # macOS version feature flags. FoundationModels was introduced in macOS 26.0.
 # Future point-releases (26.1, 26.2, ...) will add features and live behind their
@@ -52,10 +52,12 @@ macos_26_0 = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+doom-fish-utils = { path = "../doom-fish-utils", version = "0.1", optional = true }
 
 [dev-dependencies]
 regex-lite = "0.1"
 tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+pollster = "0.3"
 
 [package.metadata.docs.rs]
 all-features = true
@@ -93,6 +95,14 @@ required-features = ["macos_26_0"]
 [[example]]
 name = "07_schema_surface"
 required-features = ["macos_26_0"]
+
+[[example]]
+name = "08_async_respond"
+required-features = ["macos_26_0", "async"]
+
+[[example]]
+name = "09_async_adapter"
+required-features = ["macos_26_0", "async"]
 
 [profile.release]
 debug = "full"

@@ -5,7 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.3]
+## [0.8.0]
+
+### Added
+
+- **`async_api` module** (Tier-1 async, gated on `async` Cargo feature): executor-agnostic
+  `Future` newtypes wrapping the Apple `async throws` surface of `FoundationModels`.
+  Works with any async runtime (Tokio, async-std, smol, pollster, …).
+
+  | Rust type | Apple API |
+  |-----------|-----------|
+  | `AsyncSession::respond` | `LanguageModelSession.respond(to:)` |
+  | `AsyncSession::respond_with_options` | `LanguageModelSession.respond(to:)` with custom `GenerationOptions` |
+  | `AsyncSession::respond_generating` | `LanguageModelSession.respond(to:generating:)` |
+  | `AsyncAdapter::from_name` | `SystemLanguageModel.Adapter init(name:)` |
+  | `AsyncAdapter::compatibility` | `Adapter.compatibleAdapterIdentifiers(name:)` |
+
+  `LanguageModelSession.streamResponse(to:)` is an `AsyncSequence` (multi-fire stream)
+  and is deferred to **Tier 2**.
+
+- New Swift `@_cdecl` thunks in `swift-bridge/Sources/FoundationModelsBridge/Async.swift`:
+  `fm_adapter_create_from_name_async` and `fm_adapter_compatibility_async`.
+- Matching `extern "C"` declarations and `FmAsyncCallback` type alias in `src/ffi/mod.rs`.
+- New examples: `examples/08_async_respond.rs` and `examples/09_async_adapter.rs`.
+- New integration tests in `tests/async_api_tests.rs` (7 tests: happy paths + error paths
+  for each Future type, plus NUL-byte validation guards).
+- `doom-fish-utils` added as an optional dependency (pulled in by the `async` feature).
+- `pollster = "0.3"` added to `dev-dependencies`.
+
+
 
 ### Changed
 

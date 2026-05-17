@@ -6,6 +6,7 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 - **Sessions and multi-turn chat** — create, restore, inspect, and persist `LanguageModelSession`s
 - **Streaming** — text deltas and structured-generation snapshots
+- **Async API** — executor-agnostic `Future` wrappers for `respond(to:)`, `respond(to:generating:)`, and adapter lifecycle (see `async_api` module)
 - **Tool calling** — register Rust callbacks as `FoundationModels` `Tool`s
 - **Structured generation** — JSON-schema validation, dynamic schemas, string-choice schemas, array guides, and Rust `Generable` traits
 - **Structured content helpers** — typed `GenerationId`, string-backed `Decimal`, `GeneratedContentKind`, and generated-content builders with optional IDs
@@ -26,8 +27,44 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.7.2", features = ["macos_26_0"] }
+foundation-models = { version = "0.8.0", features = ["macos_26_0"] }
 ```
+
+## Async API
+
+Enable the `async` feature to get executor-agnostic `Future` wrappers that
+work with any async runtime (Tokio, async-std, smol, pollster, …):
+
+```toml
+[dependencies]
+foundation-models = { version = "0.8.0", features = ["macos_26_0", "async"] }
+```
+
+```rust,no_run
+use foundation_models::{LanguageModelSession, SystemLanguageModel};
+use foundation_models::async_api::AsyncSession;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+if !SystemLanguageModel::is_available() { return Ok(()); }
+pollster::block_on(async {
+    let session = LanguageModelSession::new();
+    let reply = AsyncSession::new(&session).respond("Name three Norse gods.")?.await?;
+    println!("{}", reply.content);
+    Ok::<(), Box<dyn std::error::Error>>(())
+})
+# }
+```
+
+| Type | Apple API |
+|------|-----------|
+| `AsyncSession::respond` | `LanguageModelSession.respond(to:)` |
+| `AsyncSession::respond_generating` | `LanguageModelSession.respond(to:generating:)` |
+| `AsyncAdapter::from_name` | `SystemLanguageModel.Adapter init(name:)` |
+| `AsyncAdapter::compatibility` | `Adapter.compatibleAdapterIdentifiers(name:)` |
+
+> **Tier 2 note:** `LanguageModelSession.streamResponse(to:)` is an `AsyncSequence`
+> (multi-fire stream). It is deferred to Tier 2. Use `LanguageModelSession::stream`
+> for synchronous streaming today.
 
 ## Quick start
 

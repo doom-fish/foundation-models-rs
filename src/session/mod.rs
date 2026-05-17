@@ -50,6 +50,14 @@ unsafe impl Send for LanguageModelSession {}
 unsafe impl Sync for LanguageModelSession {}
 
 impl LanguageModelSession {
+    /// Return the raw opaque pointer to the underlying Swift session object.
+    ///
+    /// Used internally by `async_api` to pass the session pointer to FFI
+    /// callbacks without exposing `ptr` as a public field.
+    pub(crate) fn as_ptr(&self) -> *mut c_void {
+        self.ptr
+    }
+
     /// Create a session with the model's default behaviour.
     ///
     /// # Panics

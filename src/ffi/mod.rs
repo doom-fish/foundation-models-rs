@@ -25,6 +25,17 @@ pub type FmRespondCallback = unsafe extern "C" fn(
     status: i32,
 );
 
+/// 3-argument async callback used by the `async_api` thunks in `Async.swift`.
+///
+/// - `result`  Non-null on success; semantics are thunk-specific (opaque pointer or C string).
+/// - `error`   Non-null null-terminated UTF-8 error message on failure.
+/// - `ctx`     Opaque context pointer from `AsyncCompletion::create()`.
+pub type FmAsyncCallback = unsafe extern "C" fn(
+    result: *mut c_void,
+    error: *const c_char,
+    ctx: *mut c_void,
+);
+
 pub type FmStreamCallback =
     unsafe extern "C" fn(context: *mut c_void, chunk: *mut c_char, done: bool, status: i32);
 
@@ -203,6 +214,30 @@ extern "C" {
         transcript_json: *const c_char,
         context: *mut c_void,
         callback: FmStreamCallback,
+    );
+
+    // ── Async thunks (Async.swift) ─────────────────────────────────────────
+
+    /// Async version of `Adapter(name:)`.
+    ///
+    /// Calls `cb(retainedAdapterBoxPtr, nil, ctx)` on success or
+    /// `cb(nil, errorCStr, ctx)` on failure.
+    /// Free the result with `fm_object_release`; errors are stack-owned by the callback.
+    pub fn fm_adapter_create_from_name_async(
+        name: *const c_char,
+        ctx: *mut c_void,
+        cb: FmAsyncCallback,
+    );
+
+    /// Async version of `Adapter.compatibleAdapterIdentifiers(name:)`.
+    ///
+    /// Calls `cb(strdupJsonPtr, nil, ctx)` on success where the pointer is a
+    /// heap-allocated UTF-8 JSON array.  Free it with `fm_string_free`.
+    /// On failure calls `cb(nil, errorCStr, ctx)`.
+    pub fn fm_adapter_compatibility_async(
+        name: *const c_char,
+        ctx: *mut c_void,
+        cb: FmAsyncCallback,
     );
 }
 

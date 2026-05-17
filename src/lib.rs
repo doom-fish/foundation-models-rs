@@ -82,6 +82,10 @@ pub mod session;
 pub mod tool;
 pub mod transcript;
 
+#[cfg(feature = "async")]
+#[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+pub mod async_api;
+
 pub use content::{
     Decimal, FromGeneratedContent, GeneratedContent, GeneratedContentKind, GenerationId,
     ToGeneratedContent,
