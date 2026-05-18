@@ -43,8 +43,8 @@ Audited against:
 | `LanguageModelSession.GenerationError.Context / Refusal / recoverySuggestion / failureReason` | ✅ implemented | Exposed via `GenerationErrorContext`, `Refusal`, and `FMError::{generation_error_context, recovery_suggestion, failure_reason, refusal}`. |
 | `LanguageModelSession.ToolCallError.tool / underlyingError` | ✅ implemented | Exposed via `ToolCallError` and `FMError::tool_call_error()`. |
 | `GenerationSchema.SchemaError.Context / recoverySuggestion` | ✅ implemented | Exposed via `SchemaErrorContext` and `FMError::{schema_error_context, recovery_suggestion}`. |
-| `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)` | ⏭️ skipped | Depends on `BackgroundAssets.AssetPack`, which this crate does not expose. |
-| `SystemLanguageModel.Adapter.AssetError.Context / recoverySuggestion` | 🟡 partial | Adapter errors still map to the current `FMError` adapter variants without typed context/recovery metadata. |
+| `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)` | ⏭️ skipped | Deferred pending a separate sibling binding crate for `BackgroundAssets.AssetPack`. |
+| `SystemLanguageModel.Adapter.AssetError.Context / recoverySuggestion` | ✅ implemented | Exposed via `AdapterAssetErrorContext` and `FMError::{adapter_asset_error_context, recovery_suggestion}`. |
 | `GenerationID` | ✅ implemented | Exposed as `GenerationId`; `GeneratedContent::{generation_id_handle, with_generation_id}` preserve opaque IDs across the bridge. |
 
 ## Verification

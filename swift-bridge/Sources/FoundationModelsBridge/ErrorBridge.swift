@@ -35,6 +35,7 @@ func generationErrorPayload(_ error: LanguageModelSession.GenerationError) -> Br
             generationErrorContext: BridgeErrorContext(debugDescription: context.debugDescription),
             refusal: nil,
             toolCallError: nil,
+            adapterAssetErrorContext: nil,
             schemaErrorContext: nil
         )
     case .refusal(let refusal, let context):
@@ -45,6 +46,7 @@ func generationErrorPayload(_ error: LanguageModelSession.GenerationError) -> Br
             generationErrorContext: BridgeErrorContext(debugDescription: context.debugDescription),
             refusal: bridgeRefusal(refusal),
             toolCallError: nil,
+            adapterAssetErrorContext: nil,
             schemaErrorContext: nil
         )
     @unknown default:
@@ -55,6 +57,7 @@ func generationErrorPayload(_ error: LanguageModelSession.GenerationError) -> Br
             generationErrorContext: nil,
             refusal: nil,
             toolCallError: nil,
+            adapterAssetErrorContext: nil,
             schemaErrorContext: nil
         )
     }
@@ -77,6 +80,7 @@ func schemaErrorPayload(_ error: GenerationSchema.SchemaError) -> BridgeErrorPay
             generationErrorContext: nil,
             refusal: nil,
             toolCallError: nil,
+            adapterAssetErrorContext: nil,
             schemaErrorContext: nil
         )
     }
@@ -88,6 +92,7 @@ func schemaErrorPayload(_ error: GenerationSchema.SchemaError) -> BridgeErrorPay
         generationErrorContext: nil,
         refusal: nil,
         toolCallError: nil,
+        adapterAssetErrorContext: nil,
         schemaErrorContext: BridgeErrorContext(debugDescription: context.debugDescription)
     )
 }
@@ -104,6 +109,7 @@ func toolCallErrorPayload(_ error: LanguageModelSession.ToolCallError) -> Bridge
             tool: bridgeToolDefinition(from: error.tool),
             underlyingError: error.underlyingError.localizedDescription
         ),
+        adapterAssetErrorContext: nil,
         schemaErrorContext: nil
     )
 }
@@ -130,7 +136,8 @@ func assetErrorPayload(_ error: SystemLanguageModel.Adapter.AssetError) -> Bridg
         generationErrorContext: nil,
         refusal: nil,
         toolCallError: nil,
-        schemaErrorContext: context
+        adapterAssetErrorContext: context,
+        schemaErrorContext: nil
     )
 }
 
@@ -214,6 +221,7 @@ public func fm_decimal_to_generated_content_json(
                 generationErrorContext: nil,
                 refusal: nil,
                 toolCallError: nil,
+                adapterAssetErrorContext: nil,
                 schemaErrorContext: nil
             ))
             return FM_INVALID_ARGUMENT

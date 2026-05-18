@@ -134,3 +134,10 @@ fn decimal_round_trips_through_generated_content() -> Result<(), FMError> {
         .contains("number"));
     Ok(())
 }
+
+#[cfg(feature = "macos_26_0")]
+#[test]
+fn adapter_asset_error_context_preserves_debug_description() {
+    let context = AdapterAssetErrorContext::new("missing adapter metadata");
+    assert_eq!(context.debug_description(), "missing adapter metadata");
+}

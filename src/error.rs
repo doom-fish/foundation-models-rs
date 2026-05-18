@@ -58,6 +58,28 @@ impl SchemaErrorContext {
     }
 }
 
+/// Structured adapter-asset error context.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdapterAssetErrorContext {
+    debug_description: String,
+}
+
+impl AdapterAssetErrorContext {
+    /// Create an adapter-asset error context from a debug description string.
+    #[must_use]
+    pub fn new(debug_description: impl Into<String>) -> Self {
+        Self {
+            debug_description: debug_description.into(),
+        }
+    }
+
+    /// Borrow the context's debug description.
+    #[must_use]
+    pub fn debug_description(&self) -> &str {
+        &self.debug_description
+    }
+}
+
 /// Typed tool-call failure metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolCallError {
@@ -201,6 +223,7 @@ struct ErrorMetadata {
     recovery_suggestion: Option<String>,
     failure_reason: Option<String>,
     generation_error_context: Option<GenerationErrorContext>,
+    adapter_asset_error_context: Option<AdapterAssetErrorContext>,
     schema_error_context: Option<SchemaErrorContext>,
     refusal: Option<Refusal>,
     tool_call_error: Option<ToolCallError>,
@@ -244,6 +267,8 @@ struct BridgeErrorPayload {
     refusal: Option<BridgeRefusal>,
     #[serde(rename = "toolCallError")]
     tool_call_error: Option<BridgeToolCallError>,
+    #[serde(rename = "adapterAssetErrorContext")]
+    adapter_asset_error_context: Option<BridgeErrorContext>,
     #[serde(rename = "schemaErrorContext")]
     schema_error_context: Option<BridgeErrorContext>,
 }
@@ -256,6 +281,9 @@ impl BridgeErrorPayload {
             generation_error_context: self
                 .generation_error_context
                 .map(|context| GenerationErrorContext::new(context.debug_description)),
+            adapter_asset_error_context: self
+                .adapter_asset_error_context
+                .map(|context| AdapterAssetErrorContext::new(context.debug_description)),
             schema_error_context: self
                 .schema_error_context
                 .map(|context| SchemaErrorContext::new(context.debug_description)),
@@ -512,6 +540,12 @@ impl FMError {
         self.metadata()?.generation_error_context
     }
 
+    /// Structured adapter-asset error context, when available.
+    #[must_use]
+    pub fn adapter_asset_error_context(&self) -> Option<AdapterAssetErrorContext> {
+        self.metadata()?.adapter_asset_error_context
+    }
+
     /// Structured schema-error context, when available.
     #[must_use]
     pub fn schema_error_context(&self) -> Option<SchemaErrorContext> {
@@ -694,6 +728,30 @@ mod tests {
                 .expect("schema context")
                 .debug_description(),
             "duplicate type Person"
+        );
+    }
+
+    #[test]
+    fn adapter_asset_error_metadata_round_trips() {
+        let error = from_swift(
+            ffi::status::ADAPTER_INVALID_NAME,
+            payload_ptr(json!({
+                "message": "adapter not found",
+                "recoverySuggestion": "Install a compatible adapter first",
+                "adapterAssetErrorContext": { "debugDescription": "missing adapter metadata" }
+            })),
+        );
+
+        assert_eq!(
+            error.recovery_suggestion().as_deref(),
+            Some("Install a compatible adapter first")
+        );
+        assert_eq!(
+            error
+                .adapter_asset_error_context()
+                .expect("adapter asset context")
+                .debug_description(),
+            "missing adapter metadata"
         );
     }
 }

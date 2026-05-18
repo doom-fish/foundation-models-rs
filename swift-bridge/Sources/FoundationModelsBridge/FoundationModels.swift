@@ -363,6 +363,7 @@ func mapError(_ error: Error) -> (Int32, String) {
             generationErrorContext: nil,
             refusal: nil,
             toolCallError: nil,
+            adapterAssetErrorContext: nil,
             schemaErrorContext: nil
         ))
     }

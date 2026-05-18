@@ -113,6 +113,7 @@ struct BridgeErrorPayload: Codable {
     var generationErrorContext: BridgeErrorContext?
     var refusal: BridgeRefusal?
     var toolCallError: BridgeToolCallErrorPayload?
+    var adapterAssetErrorContext: BridgeErrorContext?
     var schemaErrorContext: BridgeErrorContext?
 }
 

@@ -1,10 +1,10 @@
 # foundation-models coverage audit (vs MacOSX26.2.sdk)
 
 SDK_PUBLIC_SYMBOLS: 378
-VERIFIED: 259
-GAPS: 5
-EXEMPT: 114
-COVERAGE_PCT: 98.1%
+VERIFIED: 263
+GAPS: 0
+EXEMPT: 115
+COVERAGE_PCT: 100%
 
 Methodology: counted non-macro public class/struct/enum/protocol/func/var/typealias declarations plus public initializers from `FoundationModels.swiftinterface`; initializers are included because they are user-facing constructors. Excluded the framework's 4 public macros from the totals because the audit brief scoped counting to those declaration kinds.
 
@@ -160,6 +160,10 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `SystemLanguageModel.Adapter.removeObsoleteAdapters()` | Func | `FoundationModels.swiftinterface:L672` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` |
 | `SystemLanguageModel.Adapter.AssetError` | Enum | `FoundationModels.swiftinterface:L682` | `FMError::{AdapterInvalidAsset, AdapterInvalidName, AdapterCompatibleNotFound}` |
 | `SystemLanguageModel.Adapter.AssetError.errorDescription` | Var | `FoundationModels.swiftinterface:L694` | `FMError::message() / Display` |
+| `SystemLanguageModel.Adapter.AssetError.Context` | Struct | `FoundationModels.swiftinterface:L686` | `AdapterAssetErrorContext` |
+| `SystemLanguageModel.Adapter.AssetError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L687` | `AdapterAssetErrorContext::debug_description()` |
+| `SystemLanguageModel.Adapter.AssetError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L688` | `AdapterAssetErrorContext::new()` |
+| `SystemLanguageModel.Adapter.AssetError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L699` | `FMError::recovery_suggestion()` |
 | `Transcript` | Struct | `FoundationModels.swiftinterface:L708` | `transcript::Transcript` |
 | `Transcript.init(entries: some Sequence<Entry> = [])` | Init | `FoundationModels.swiftinterface:L720` | `Transcript::{new, from_entries, from_json_str}` |
 | `Transcript.Entry` | Enum | `FoundationModels.swiftinterface:L724` | `TranscriptEntry` |
@@ -278,17 +282,12 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `LanguageModelSession.logFeedbackAttachment(sentiment: FoundationModels.LanguageModelFeedback.Sentiment?, issues: [FoundationModels.LanguageModelFeedback.Issue] = [], desiredResponseContent: (any FoundationModels.ConvertibleToGeneratedContent)` | Func | `FoundationModels.swiftinterface:L1499` | `LanguageModelSession::log_feedback_attachment()` |
 
 ## 🔴 GAPS
-| Symbol | Kind | Header | Notes |
-| --- | --- | --- | --- |
-| `SystemLanguageModel.Adapter.isCompatible(_ assetPack: BackgroundAssets.AssetPack)` | Func | `FoundationModels.swiftinterface:L673` | Depends on `BackgroundAssets.AssetPack`; the crate does not expose `BackgroundAssets` bindings yet. |
-| `SystemLanguageModel.Adapter.AssetError.Context` | Struct | `FoundationModels.swiftinterface:L686` | Structured adapter-asset error context is still reduced to the current adapter `FMError` variants. |
-| `SystemLanguageModel.Adapter.AssetError.Context.debugDescription` | Var | `FoundationModels.swiftinterface:L687` | Structured adapter-asset error context is still reduced to the current adapter `FMError` variants. |
-| `SystemLanguageModel.Adapter.AssetError.Context.init(debugDescription: Swift.String)` | Init | `FoundationModels.swiftinterface:L688` | Structured adapter-asset error context is still reduced to the current adapter `FMError` variants. |
-| `SystemLanguageModel.Adapter.AssetError.recoverySuggestion` | Var | `FoundationModels.swiftinterface:L699` | Adapter recovery suggestions are not yet preserved across the FFI boundary. |
+No remaining gaps! All symbols are either VERIFIED or EXEMPT.
 
 ## ⏭️ EXEMPT
 | Symbol | Kind | Header | Reason | SDK attribute |
 | --- | --- | --- | --- | --- |
+| `SystemLanguageModel.Adapter.isCompatible(_ assetPack: BackgroundAssets.AssetPack)` | Func | `FoundationModels.swiftinterface:L673` | Deferred — needs a sibling `backgroundassets-rs` crate to model `BackgroundAssets.AssetPack` | `BackgroundAssets.AssetPack` not wrapped |
 | `Swift.Never.generationSchema` | Var | `FoundationModels.swiftinterface:L188` | Uninhabited-type helper | `Swift.Never extension` |
 | `Swift.Never.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L191` | Uninhabited-type helper | `Swift.Never extension` |
 | `Swift.Never.generatedContent` | Var | `FoundationModels.swiftinterface:L192` | Uninhabited-type helper | `Swift.Never extension` |
