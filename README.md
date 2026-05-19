@@ -191,7 +191,7 @@ cargo run --example 07_schema_surface --features macos_26_0
 ## Notes
 
 - Swift-only compile-time macros such as `@Generable` and `@Guide` are exposed as Rust runtime traits/builders (`Generable`, `GenerationGuide`, `DynamicGenerationSchema`).
-- `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` is not wrapped because it depends on `BackgroundAssets.AssetPack`, which this crate does not expose.
+- The previously audited `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` exemption has been removed: Xcode 26.5's `FoundationModels.swiftinterface` no longer exposes that symbol. Enable the optional `backgroundassets` feature to pull in the sibling `backgroundassets` crate for future interop helpers.
 - `GenerationID` now round-trips as `GenerationId` via `GeneratedContent::generation_id_handle()`; `GeneratedContent::generation_id()` remains as a best-effort string helper.
 - Typed generation/schema/adapter error metadata plus refusal helpers are available through `FMError::{generation_error_context, adapter_asset_error_context, schema_error_context, recovery_suggestion, failure_reason, refusal, tool_call_error}`.
 - Xcode 26.5's `FoundationModels.swiftinterface` does **not** expose standalone `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, or `Streaming` symbols; see [`COVERAGE.md`](COVERAGE.md) for the audited matrix.

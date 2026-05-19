@@ -71,6 +71,10 @@
     clippy::use_self
 )]
 
+#[cfg(feature = "backgroundassets")]
+#[cfg_attr(docsrs, doc(cfg(feature = "backgroundassets")))]
+pub use backgroundassets;
+
 pub mod content;
 pub mod error;
 pub mod ffi;

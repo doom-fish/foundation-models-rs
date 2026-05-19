@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.0] - 2026-05-19
+
+### Added
+
+- Added an optional `backgroundassets` Cargo feature that pulls in the published sibling `backgroundassets` crate for cross-framework interop.
+
+### Changed
+
+- Updated the macOS 26.5 audit to remove the stale `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)` exemption; the current SDK no longer exposes that symbol.
+
 ## [0.10.1] - 2026-05-19
 
 - Bump MSRV from 1.70 to 1.76 to match fleet baseline.

@@ -257,8 +257,6 @@ fn system_language_model_coverage() {
         "UseCase",
         "Guardrails",
         "isAvailable", // wrapped as Rust `is_available`
-        // The asset-pack compatibility helper depends on BackgroundAssets.
-        "isCompatible",
     ]
     .into_iter()
     .map(String::from)

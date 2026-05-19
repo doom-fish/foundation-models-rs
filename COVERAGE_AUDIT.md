@@ -1,9 +1,9 @@
 # foundation-models coverage audit (vs MacOSX26.5.sdk)
 
-SDK_PUBLIC_SYMBOLS: 382
+SDK_PUBLIC_SYMBOLS: 381
 VERIFIED: 267
 GAPS: 0
-EXEMPT: 115
+EXEMPT: 114
 COVERAGE_PCT: 100%
 
 Methodology: counted non-macro public class/struct/enum/protocol/func/var/typealias declarations plus public initializers from `FoundationModels.swiftinterface`; initializers are included because they are user-facing constructors. Excluded the framework's 4 public macros from the totals because the audit brief scoped counting to those declaration kinds.
@@ -291,7 +291,6 @@ No remaining gaps! All symbols are either VERIFIED or EXEMPT.
 ## ⏭️ EXEMPT
 | Symbol | Kind | Header | Reason | SDK attribute |
 | --- | --- | --- | --- | --- |
-| `SystemLanguageModel.Adapter.isCompatible(_ assetPack: BackgroundAssets.AssetPack)` | Func | `FoundationModels.swiftinterface:L673` | Deferred — needs a sibling `backgroundassets-rs` crate to model `BackgroundAssets.AssetPack` | `BackgroundAssets.AssetPack` not wrapped |
 | `Swift.Never.generationSchema` | Var | `FoundationModels.swiftinterface:L188` | Uninhabited-type helper | `Swift.Never extension` |
 | `Swift.Never.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L191` | Uninhabited-type helper | `Swift.Never extension` |
 | `Swift.Never.generatedContent` | Var | `FoundationModels.swiftinterface:L192` | Uninhabited-type helper | `Swift.Never extension` |
