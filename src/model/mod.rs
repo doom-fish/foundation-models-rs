@@ -9,6 +9,9 @@ use std::sync::mpsc;
 
 use serde_json::Value;
 
+#[cfg(feature = "async")]
+use doom_fish_utils::completion::{error_from_cstr, AsyncCompletion};
+
 use crate::error::{from_swift, FMError, Unavailability};
 use crate::ffi;
 
@@ -39,6 +42,51 @@ fn json_string(ptr: *mut c_char) -> String {
         return String::from("[]");
     }
     owned_string(ptr)
+}
+
+#[cfg(feature = "async")]
+async fn token_count_inner(model_ptr: usize, prompt: &str) -> Result<usize, FMError> {
+    let prompt = CString::new(prompt).map_err(|error| {
+        FMError::InvalidArgument(format!("prompt contains an interior NUL byte: {error}"))
+    })?;
+    let (future, ctx) = AsyncCompletion::<String>::create();
+    unsafe {
+        ffi::fm_system_model_token_count_prompt_async(
+            model_ptr as *mut c_void,
+            prompt.as_ptr(),
+            ctx,
+            token_count_async_cb,
+        );
+    }
+    let value = future.await.map_err(|message| FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message,
+    })?;
+    value.parse::<usize>().map_err(|error| {
+        FMError::DecodingFailure(format!(
+            "token count bridge returned invalid integer: {error}"
+        ))
+    })
+}
+
+#[cfg(feature = "async")]
+unsafe extern "C" fn token_count_async_cb(
+    result: *mut c_void,
+    error: *const c_char,
+    ctx: *mut c_void,
+) {
+    if !error.is_null() {
+        let message = unsafe { error_from_cstr(error) };
+        unsafe { AsyncCompletion::<String>::complete_err(ctx, message) };
+    } else if !result.is_null() {
+        let value = unsafe { core::ffi::CStr::from_ptr(result.cast::<c_char>()) }
+            .to_string_lossy()
+            .into_owned();
+        unsafe { ffi::fm_string_free(result.cast::<c_char>()) };
+        unsafe { AsyncCompletion::complete_ok(ctx, value) };
+    } else {
+        unsafe { AsyncCompletion::<String>::complete_err(ctx, "null token count result".into()) };
+    }
 }
 
 /// The on-device system language model namespace.
@@ -119,6 +167,17 @@ impl SystemLanguageModel {
             ffi::fm_system_model_supports_locale(ptr::null_mut(), locale.as_ptr())
         })
     }
+
+    /// Count how many tokens the default system model would consume for a prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the prompt is invalid or the SDK rejects the request.
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    pub async fn token_count(prompt: &str) -> Result<usize, FMError> {
+        token_count_inner(ptr::null_mut::<c_void>() as usize, prompt).await
+    }
 }
 
 /// A configured `SystemLanguageModel` instance.
@@ -152,6 +211,19 @@ impl ConfiguredSystemLanguageModel {
         CString::new(locale_identifier).map_or(false, |locale| unsafe {
             ffi::fm_system_model_supports_locale(self.ptr, locale.as_ptr())
         })
+    }
+
+    /// Count how many tokens this configured model would consume for a prompt.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the prompt is invalid or the SDK rejects the request.
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    #[allow(clippy::future_not_send)]
+    pub async fn token_count(&self, prompt: &str) -> Result<usize, FMError> {
+        let model_ptr = self.ptr as usize;
+        token_count_inner(model_ptr, prompt).await
     }
 }
 

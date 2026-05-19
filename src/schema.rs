@@ -12,10 +12,19 @@ use crate::error::FMError;
 use crate::ffi;
 
 /// A validated FoundationModels generation schema encoded as JSON Schema.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct GenerationSchema {
     json_schema: String,
+    bridge_request_json: Option<String>,
 }
+
+impl PartialEq for GenerationSchema {
+    fn eq(&self, other: &Self) -> bool {
+        self.json_schema == other.json_schema
+    }
+}
+
+impl Eq for GenerationSchema {}
 
 impl GenerationSchema {
     /// Validate and store a JSON schema definition.
@@ -36,7 +45,10 @@ impl GenerationSchema {
         if status != ffi::status::OK {
             return Err(crate::error::from_swift(status, error_ptr));
         }
-        Ok(Self { json_schema })
+        Ok(Self {
+            json_schema,
+            bridge_request_json: None,
+        })
     }
 
     /// Create a schema from a dynamic root schema plus optional dependencies.
@@ -60,7 +72,7 @@ impl GenerationSchema {
                 "dynamic schema request is not JSON-serializable: {error}"
             ))
         })?;
-        let request_c = CString::new(request_json).map_err(|error| {
+        let request_c = CString::new(request_json.as_str()).map_err(|error| {
             FMError::InvalidArgument(format!("dynamic schema JSON contains NUL byte: {error}"))
         })?;
         let (tx, rx) = mpsc::channel();
@@ -77,7 +89,85 @@ impl GenerationSchema {
             code: ffi::status::UNKNOWN,
             message: "Swift bridge dropped the schema callback channel".into(),
         })??;
-        Ok(Self { json_schema })
+        Ok(Self {
+            json_schema,
+            bridge_request_json: Some(request_json),
+        })
+    }
+
+    /// Build an object schema with FoundationModels' typed `GenerationSchema` initializer.
+    ///
+    /// This Rust wrapper uses `GeneratedContent` as the root Swift type and
+    /// mirrors the SDK's property-based schema builder.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the typed schema is invalid.
+    pub fn new(
+        description: Option<String>,
+        properties: impl IntoIterator<Item = (impl Into<String>, DynamicGenerationProperty)>,
+    ) -> Result<Self, FMError> {
+        Self::new_with_nil_repr(description, false, properties)
+    }
+
+    /// Build an object schema with FoundationModels' typed `GenerationSchema` initializer,
+    /// optionally requiring explicit `null` values for optional properties.
+    ///
+    /// # Errors
+    ///
+    /// Returns an [`FMError`] if the typed schema is invalid or the current
+    /// runtime does not support explicit null representation.
+    pub fn new_with_nil_repr(
+        description: Option<String>,
+        represent_nil_explicitly_in_generated_content: bool,
+        properties: impl IntoIterator<Item = (impl Into<String>, DynamicGenerationProperty)>,
+    ) -> Result<Self, FMError> {
+        let request = json!({
+            "description": description,
+            "representNilExplicitlyInGeneratedContent": represent_nil_explicitly_in_generated_content,
+            "properties": properties
+                .into_iter()
+                .map(|(name, property)| {
+                    let DynamicGenerationProperty {
+                        schema,
+                        description,
+                        optional,
+                    } = property;
+                    json!({
+                        "name": name.into(),
+                        "description": description,
+                        "optional": optional,
+                        "schema": schema.to_json_value(),
+                    })
+                })
+                .collect::<Vec<_>>(),
+        });
+        let request_json = serde_json::to_string(&request).map_err(|error| {
+            FMError::InvalidArgument(format!(
+                "typed schema request is not JSON-serializable: {error}"
+            ))
+        })?;
+        let request_c = CString::new(request_json.as_str()).map_err(|error| {
+            FMError::InvalidArgument(format!("typed schema JSON contains NUL byte: {error}"))
+        })?;
+        let (tx, rx) = mpsc::channel();
+        let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
+        let context = Box::into_raw(tx_box).cast::<c_void>();
+        unsafe {
+            ffi::fm_generation_schema_create_typed_json(
+                request_c.as_ptr(),
+                context,
+                schema_callback_trampoline,
+            );
+        }
+        let json_schema = rx.recv().map_err(|_| FMError::Unknown {
+            code: ffi::status::UNKNOWN,
+            message: "Swift bridge dropped the typed schema callback channel".into(),
+        })??;
+        Ok(Self {
+            json_schema,
+            bridge_request_json: Some(request_json),
+        })
     }
 
     /// The JSON Schema payload accepted by Apple's `GenerationSchema`.
@@ -91,6 +181,24 @@ impl GenerationSchema {
     pub fn name(&self) -> Option<String> {
         let value: Value = serde_json::from_str(&self.json_schema).ok()?;
         value.get("title")?.as_str().map(ToOwned::to_owned)
+    }
+
+    pub(crate) fn bridge_request_json(&self) -> &str {
+        self.bridge_request_json
+            .as_deref()
+            .unwrap_or_else(|| self.json_schema())
+    }
+
+    pub(crate) fn effective_include_schema_in_prompt(&self, requested: bool) -> bool {
+        requested && !self.uses_explicit_null_representation()
+    }
+
+    fn uses_explicit_null_representation(&self) -> bool {
+        self.bridge_request_json
+            .as_ref()
+            .is_some_and(|json| json.contains("\"representNilExplicitlyInGeneratedContent\":true"))
+            || self.json_schema.contains("\"type\":\"null\"")
+            || self.json_schema.contains("\"type\": \"null\"")
     }
 
     /// A JSON string schema.
@@ -126,7 +234,10 @@ impl GenerationSchema {
     }
 
     pub(crate) fn from_json_schema_unchecked(json_schema: String) -> Self {
-        Self { json_schema }
+        Self {
+            json_schema,
+            bridge_request_json: None,
+        }
     }
 }
 
@@ -136,6 +247,7 @@ pub enum DynamicGenerationSchema {
     Object {
         name: String,
         description: Option<String>,
+        represent_nil_explicitly_in_generated_content: bool,
         properties: BTreeMap<String, DynamicGenerationProperty>,
     },
     Array {
@@ -183,6 +295,7 @@ pub enum DynamicGenerationSchema {
     Reference {
         name: String,
     },
+    Null,
 }
 
 impl DynamicGenerationSchema {
@@ -192,8 +305,37 @@ impl DynamicGenerationSchema {
         Self::Object {
             name: name.into(),
             description: None,
+            represent_nil_explicitly_in_generated_content: false,
             properties: BTreeMap::new(),
         }
+    }
+
+    /// Create an object schema that keeps optional properties as explicit `null`s.
+    #[must_use]
+    pub fn new_with_nil_repr(
+        name: impl Into<String>,
+        description: Option<String>,
+        represent_nil_explicitly_in_generated_content: bool,
+        properties: impl IntoIterator<Item = (impl Into<String>, DynamicGenerationProperty)>,
+    ) -> Self {
+        Self::Object {
+            name: name.into(),
+            description,
+            represent_nil_explicitly_in_generated_content,
+            properties: properties
+                .into_iter()
+                .map(|(name, property)| (name.into(), property))
+                .collect(),
+        }
+    }
+
+    /// The SDK's typed `DynamicGenerationSchema.null` marker.
+    pub const NULL: Self = Self::Null;
+
+    /// Create the SDK's typed `DynamicGenerationSchema.null` marker.
+    #[must_use]
+    pub const fn null() -> Self {
+        Self::Null
     }
 
     /// Create a string schema.
@@ -323,7 +465,7 @@ impl DynamicGenerationSchema {
             }
             | Self::Boolean { description: slot }
             | Self::GeneratedContent { description: slot } => *slot = Some(description.into()),
-            Self::Array { .. } | Self::Reference { .. } => {}
+            Self::Array { .. } | Self::Reference { .. } | Self::Null => {}
         }
         self
     }
@@ -372,7 +514,8 @@ impl DynamicGenerationSchema {
             | Self::AnyOfStrings { .. }
             | Self::Boolean { .. }
             | Self::GeneratedContent { .. }
-            | Self::Reference { .. } => {}
+            | Self::Reference { .. }
+            | Self::Null => {}
         }
         self
     }
@@ -382,8 +525,14 @@ impl DynamicGenerationSchema {
             Self::Object {
                 name,
                 description,
+                represent_nil_explicitly_in_generated_content,
                 properties,
-            } => object_schema_json(name, description, properties),
+            } => object_schema_json(
+                name,
+                description,
+                *represent_nil_explicitly_in_generated_content,
+                properties,
+            ),
             Self::Array {
                 item,
                 minimum_elements,
@@ -435,6 +584,7 @@ impl DynamicGenerationSchema {
                 primitive_schema_json("generated_content", description, &[])
             }
             Self::Reference { name } => json!({ "$ref": name }),
+            Self::Null => json!({ "type": "null" }),
         }
     }
 }
@@ -458,6 +608,7 @@ fn named_schema_json(
 fn object_schema_json(
     name: &str,
     description: &Option<String>,
+    represent_nil_explicitly_in_generated_content: bool,
     properties: &BTreeMap<String, DynamicGenerationProperty>,
 ) -> Value {
     let property_map = properties
@@ -469,6 +620,12 @@ fn object_schema_json(
     map.insert("name".into(), Value::String(name.to_string()));
     if let Some(description) = description {
         map.insert("description".into(), Value::String(description.clone()));
+    }
+    if represent_nil_explicitly_in_generated_content {
+        map.insert(
+            "representNilExplicitlyInGeneratedContent".into(),
+            Value::Bool(true),
+        );
     }
     map.insert("properties".into(), Value::Object(property_map));
     Value::Object(map)

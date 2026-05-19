@@ -37,6 +37,20 @@ func bridgeBuildDynamicSchema(from json: Any, name: String) throws -> DynamicGen
                     isOptional: isOptional
                 )
             }
+        let explicitNil = (dict["representNilExplicitlyInGeneratedContent"] as? Bool) ?? false
+        if explicitNil {
+            if #available(macOS 26.4, *) {
+                return DynamicGenerationSchema(
+                    name: schemaName,
+                    description: description,
+                    representNilExplicitlyInGeneratedContent: true,
+                    properties: properties
+                )
+            }
+            throw NSError(domain: "fm-bridge", code: -12, userInfo: [
+                NSLocalizedDescriptionKey: "explicit nil representation requires macOS 26.4 or newer"
+            ])
+        }
         return DynamicGenerationSchema(name: schemaName, description: description, properties: properties)
     case "array":
         var itemJSON: Any = dict["items"] ?? ["type": "string"]
@@ -139,6 +153,13 @@ func bridgeBuildDynamicSchema(from json: Any, name: String) throws -> DynamicGen
         return DynamicGenerationSchema(type: Bool.self, guides: [])
     case "generated_content":
         return DynamicGenerationSchema(type: GeneratedContent.self, guides: [])
+    case "null":
+        if #available(macOS 26.4, *) {
+            return .null
+        }
+        throw NSError(domain: "fm-bridge", code: -13, userInfo: [
+            NSLocalizedDescriptionKey: "DynamicGenerationSchema.null requires macOS 26.4 or newer"
+        ])
     default:
         throw NSError(domain: "fm-bridge", code: -2, userInfo: [
             NSLocalizedDescriptionKey: "unsupported schema type: \(typeStr)"
@@ -269,6 +290,233 @@ private func decimalGuides(from values: [Any]?) throws -> [GenerationGuide<Decim
         }
     }
 }
+
+@available(macOS 26.0, *)
+func schemaBridgeError(_ message: String, code: Int = -14) -> NSError {
+    NSError(domain: "fm-bridge", code: code, userInfo: [
+        NSLocalizedDescriptionKey: message
+    ])
+}
+
+@available(macOS 26.0, *)
+private func stringGuide(from value: Any) throws -> GenerationGuide<String> {
+    guard let guide = try stringGuides(from: [value]).first else {
+        throw schemaBridgeError("invalid string guide")
+    }
+    return guide
+}
+
+@available(macOS 26.0, *)
+private func intGuide(from value: Any) throws -> GenerationGuide<Int> {
+    guard let guide = try intGuides(from: [value]).first else {
+        throw schemaBridgeError("invalid integer guide")
+    }
+    return guide
+}
+
+@available(macOS 26.0, *)
+private func floatGuide(from value: Any) throws -> GenerationGuide<Float> {
+    guard let guide = try floatGuides(from: [value]).first else {
+        throw schemaBridgeError("invalid float guide")
+    }
+    return guide
+}
+
+@available(macOS 26.0, *)
+private func doubleGuide(from value: Any) throws -> GenerationGuide<Double> {
+    guard let guide = try doubleGuides(from: [value]).first else {
+        throw schemaBridgeError("invalid number guide")
+    }
+    return guide
+}
+
+@available(macOS 26.0, *)
+private func decimalGuide(from value: Any) throws -> GenerationGuide<Decimal> {
+    guard let guide = try decimalGuides(from: [value]).first else {
+        throw schemaBridgeError("invalid decimal guide")
+    }
+    return guide
+}
+
+@available(macOS 26.0, *)
+private func typedStringGuides(from schema: [String: Any]) throws -> [GenerationGuide<String>] {
+    var guides = try stringGuides(from: schema["guides"] as? [Any])
+    if (schema["type"] as? String) == "any_of" {
+        let choices = ((schema["choices"] as? [Any]) ?? []).compactMap { $0 as? String }
+        guard !choices.isEmpty else {
+            throw schemaBridgeError("typed string unions must use string choices only")
+        }
+        guides.insert(.anyOf(choices), at: 0)
+    }
+    return guides
+}
+
+@available(macOS 26.0, *)
+private func makeProperty<Value: Generable>(
+    name: String,
+    description: String?,
+    optional: Bool,
+    guides: [GenerationGuide<Value>] = []
+) -> GenerationSchema.Property {
+    optional
+        ? GenerationSchema.Property(name: name, description: description, type: Value?.self, guides: guides)
+        : GenerationSchema.Property(name: name, description: description, type: Value.self, guides: guides)
+}
+
+@available(macOS 26.0, *)
+private func makeArrayProperty<Element: Generable>(
+    name: String,
+    description: String?,
+    optional: Bool,
+    guides: [GenerationGuide<[Element]>]
+) -> GenerationSchema.Property {
+    optional
+        ? GenerationSchema.Property(name: name, description: description, type: [Element]?.self, guides: guides)
+        : GenerationSchema.Property(name: name, description: description, type: [Element].self, guides: guides)
+}
+
+@available(macOS 26.0, *)
+private func typedArrayGuides<Element>(
+    from values: [Any]?,
+    elementGuide: (Any) throws -> GenerationGuide<Element>
+) throws -> [GenerationGuide<[Element]>] {
+    guard let values else { return [] }
+    return try values.map { value in
+        let dict = try guideDictionary(value)
+        switch dict["kind"] as? String {
+        case "minimum_count":
+            return .minimumCount(dict["value"] as? Int ?? 0)
+        case "maximum_count":
+            return .maximumCount(dict["value"] as? Int ?? 0)
+        case "count":
+            if let count = dict["value"] as? Int {
+                return .count(count)
+            }
+            return .count((dict["min"] as? Int ?? 0)...(dict["max"] as? Int ?? 0))
+        case "element":
+            guard let nested = dict["guide"] else {
+                throw schemaBridgeError("array element guides must include a nested guide")
+            }
+            return .element(try elementGuide(nested))
+        default:
+            throw schemaBridgeError("unsupported typed array guide")
+        }
+    }
+}
+
+@available(macOS 26.0, *)
+func typedSchemaProperty(from value: Any) throws -> GenerationSchema.Property {
+    guard let dict = value as? [String: Any],
+          let name = dict["name"] as? String,
+          let schema = dict["schema"] as? [String: Any] else {
+        throw schemaBridgeError("typed schema properties must include a name and schema")
+    }
+
+    if schema["$ref"] != nil || schema["reference"] != nil {
+        throw schemaBridgeError("typed schema properties do not support references; use GenerationSchema(root:dependencies:) instead")
+    }
+
+    let optional = (dict["optional"] as? Bool) ?? false
+    let description = (dict["description"] as? String) ?? (schema["description"] as? String)
+    let typeStr = (schema["type"] as? String) ?? "object"
+
+    switch typeStr {
+    case "string", "any_of":
+        return makeProperty(
+            name: name,
+            description: description,
+            optional: optional,
+            guides: try typedStringGuides(from: schema)
+        )
+    case "integer":
+        return makeProperty(
+            name: name,
+            description: description,
+            optional: optional,
+            guides: try intGuides(from: schema["guides"] as? [Any])
+        )
+    case "float":
+        return makeProperty(
+            name: name,
+            description: description,
+            optional: optional,
+            guides: try floatGuides(from: schema["guides"] as? [Any])
+        )
+    case "number", "double":
+        return makeProperty(
+            name: name,
+            description: description,
+            optional: optional,
+            guides: try doubleGuides(from: schema["guides"] as? [Any])
+        )
+    case "decimal":
+        return makeProperty(
+            name: name,
+            description: description,
+            optional: optional,
+            guides: try decimalGuides(from: schema["guides"] as? [Any])
+        )
+    case "boolean":
+        return optional
+            ? GenerationSchema.Property(name: name, description: description, type: Bool?.self, guides: [])
+            : GenerationSchema.Property(name: name, description: description, type: Bool.self, guides: [])
+    case "generated_content":
+        return optional
+            ? GenerationSchema.Property(name: name, description: description, type: GeneratedContent?.self, guides: [])
+            : GenerationSchema.Property(name: name, description: description, type: GeneratedContent.self, guides: [])
+    case "array":
+        guard let itemSchema = schema["items"] as? [String: Any] else {
+            throw schemaBridgeError("typed array properties must include an item schema")
+        }
+        if itemSchema["$ref"] != nil || itemSchema["reference"] != nil {
+            throw schemaBridgeError("typed array properties do not support referenced element schemas")
+        }
+        let itemType = (itemSchema["type"] as? String) ?? "object"
+        switch itemType {
+        case "string", "any_of":
+            let itemGuides = try typedStringGuides(from: itemSchema)
+            var guides = try typedArrayGuides(from: schema["guides"] as? [Any], elementGuide: stringGuide)
+            guides.append(contentsOf: itemGuides.map(GenerationGuide<[String]>.element))
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        case "integer":
+            let itemGuides = try intGuides(from: itemSchema["guides"] as? [Any])
+            var guides = try typedArrayGuides(from: schema["guides"] as? [Any], elementGuide: intGuide)
+            guides.append(contentsOf: itemGuides.map(GenerationGuide<[Int]>.element))
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        case "float":
+            let itemGuides = try floatGuides(from: itemSchema["guides"] as? [Any])
+            var guides = try typedArrayGuides(from: schema["guides"] as? [Any], elementGuide: floatGuide)
+            guides.append(contentsOf: itemGuides.map(GenerationGuide<[Float]>.element))
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        case "number", "double":
+            let itemGuides = try doubleGuides(from: itemSchema["guides"] as? [Any])
+            var guides = try typedArrayGuides(from: schema["guides"] as? [Any], elementGuide: doubleGuide)
+            guides.append(contentsOf: itemGuides.map(GenerationGuide<[Double]>.element))
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        case "decimal":
+            let itemGuides = try decimalGuides(from: itemSchema["guides"] as? [Any])
+            var guides = try typedArrayGuides(from: schema["guides"] as? [Any], elementGuide: decimalGuide)
+            guides.append(contentsOf: itemGuides.map(GenerationGuide<[Decimal]>.element))
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        case "boolean":
+            let guides: [GenerationGuide<[Bool]>] = try typedArrayGuides(from: schema["guides"] as? [Any]) { _ in
+                throw schemaBridgeError("boolean arrays do not support element guides")
+            }
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        case "generated_content":
+            let guides: [GenerationGuide<[GeneratedContent]>] = try typedArrayGuides(from: schema["guides"] as? [Any]) { _ in
+                throw schemaBridgeError("generated-content arrays do not support element guides")
+            }
+            return makeArrayProperty(name: name, description: description, optional: optional, guides: guides)
+        default:
+            throw schemaBridgeError("unsupported typed array element type: \(itemType)")
+        }
+    case "null":
+        throw schemaBridgeError("typed schema properties cannot be pure null values; use an optional property plus explicit nil representation")
+    default:
+        throw schemaBridgeError("unsupported typed schema property type: \(typeStr)")
+    }
+}
 #endif
 
 @_cdecl("fm_generation_schema_compile_json")
@@ -329,4 +577,58 @@ public func fm_generation_schema_validate_json(
     #endif
     writeErrorOut(errorOut, "FoundationModels requires macOS 26.0 or newer")
     return FM_MODEL_UNAVAILABLE
+}
+
+@_cdecl("fm_generation_schema_create_typed_json")
+public func fm_generation_schema_create_typed_json(
+    _ requestJSON: UnsafePointer<CChar>,
+    _ context: UnsafeMutableRawPointer?,
+    _ callback: @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafeMutablePointer<CChar>?,
+        UnsafeMutablePointer<CChar>?,
+        Int32
+    ) -> Void
+) {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        do {
+            guard let data = String(cString: requestJSON).data(using: .utf8),
+                  let parsed = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                callback(context, nil, ffiString("typed schema request JSON is invalid"), FM_INVALID_ARGUMENT)
+                return
+            }
+            let properties = try ((parsed["properties"] as? [Any]) ?? []).map(typedSchemaProperty)
+            let description = parsed["description"] as? String
+            let explicitNil = (parsed["representNilExplicitlyInGeneratedContent"] as? Bool) ?? false
+            let schema: GenerationSchema
+            if explicitNil {
+                if #available(macOS 26.4, *) {
+                    schema = GenerationSchema(
+                        type: GeneratedContent.self,
+                        description: description,
+                        representNilExplicitlyInGeneratedContent: true,
+                        properties: properties
+                    )
+                } else {
+                    throw schemaBridgeError("explicit nil representation requires macOS 26.4 or newer")
+                }
+            } else {
+                schema = GenerationSchema(
+                    type: GeneratedContent.self,
+                    description: description,
+                    properties: properties
+                )
+            }
+            let encoded = try encodeBridge(schema)
+            callback(context, ffiString(encoded), nil, FM_OK)
+            return
+        } catch {
+            let (code, message) = mapError(error)
+            callback(context, nil, ffiString(message), code)
+            return
+        }
+    }
+    #endif
+    callback(context, nil, ffiString("FoundationModels requires macOS 26.0 or newer"), FM_MODEL_UNAVAILABLE)
 }

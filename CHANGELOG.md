@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0]
+
+### Added
+
+- `DynamicGenerationSchema::{new_with_nil_repr, NULL, null}` now cover the macOS 26.4 explicit-nil and `.null` dynamic-schema surface.
+- `GenerationSchema::{new, new_with_nil_repr}` now mirror the typed property-schema builders using a `GeneratedContent` root.
+- `SystemLanguageModel::token_count` and `ConfiguredSystemLanguageModel::token_count` now expose async `tokenCount(for:)`.
+- Two integration tests now cover explicit-null structured generation and positive token counts.
+
+### Changed
+
+- Schema bridge requests now preserve their original Swift-builder payloads so macOS 26.4 explicit-nil schemas round-trip through sessions, tools, and async helpers.
+- Structured-generation request builders now suppress inline schema prompting for explicit-nil schemas to avoid the SDK's current decoding failure on that path.
+- Coverage docs now target the macOS 26.5 SDK audit.
+
 ## [0.9.0]
 
 ### Added

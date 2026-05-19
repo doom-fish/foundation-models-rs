@@ -30,11 +30,8 @@ pub type FmRespondCallback = unsafe extern "C" fn(
 /// - `result`  Non-null on success; semantics are thunk-specific (opaque pointer or C string).
 /// - `error`   Non-null null-terminated UTF-8 error message on failure.
 /// - `ctx`     Opaque context pointer from `AsyncCompletion::create()`.
-pub type FmAsyncCallback = unsafe extern "C" fn(
-    result: *mut c_void,
-    error: *const c_char,
-    ctx: *mut c_void,
-);
+pub type FmAsyncCallback =
+    unsafe extern "C" fn(result: *mut c_void, error: *const c_char, ctx: *mut c_void);
 
 pub type FmStreamCallback =
     unsafe extern "C" fn(context: *mut c_void, chunk: *mut c_char, done: bool, status: i32);
@@ -72,6 +69,12 @@ extern "C" {
         model: *mut c_void,
         locale_identifier: *const c_char,
     ) -> bool;
+    pub fn fm_system_model_token_count_prompt_async(
+        model: *mut c_void,
+        prompt: *const c_char,
+        ctx: *mut c_void,
+        cb: FmAsyncCallback,
+    );
 
     pub fn fm_adapter_create_from_file(
         file_path: *const c_char,
@@ -180,6 +183,11 @@ extern "C" {
         schema_json: *const c_char,
         error_out: *mut *mut c_char,
     ) -> i32;
+    pub fn fm_generation_schema_create_typed_json(
+        request_json: *const c_char,
+        context: *mut c_void,
+        callback: FmRespondCallback,
+    );
 
     pub fn fm_generation_id_create(
         output_out: *mut *mut c_char,

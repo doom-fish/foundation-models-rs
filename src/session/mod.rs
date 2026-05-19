@@ -950,6 +950,9 @@ fn respond_request_json(
             "seed": options.sampling_seed(),
         }),
     };
+    let include_schema_in_prompt = schema.map_or(include_schema_in_prompt, |schema| {
+        schema.effective_include_schema_in_prompt(include_schema_in_prompt)
+    });
     let payload = serde_json::to_string(&json!({
         "prompt": prompt.to_bridge_value(),
         "options": {
@@ -957,7 +960,7 @@ fn respond_request_json(
             "maximumResponseTokens": options.maximum_response_tokens(),
             "sampling": sampling,
         },
-        "schemaJSON": schema.map(GenerationSchema::json_schema),
+        "schemaJSON": schema.map(GenerationSchema::bridge_request_json),
         "includeSchemaInPrompt": include_schema_in_prompt,
     }))
     .map_err(|error| {
@@ -1164,9 +1167,7 @@ unsafe extern "C" fn json_text_stream_trampoline(
                         .is_err()
                 };
                 if chunk_panicked {
-                    if let Some(tx) =
-                        state.done_tx.lock().expect("done_tx mutex poisoned").take()
-                    {
+                    if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
                         let _ = tx.send(Err(FMError::Unknown {
                             code: ffi::status::UNKNOWN,
                             message: "stream callback panicked".into(),

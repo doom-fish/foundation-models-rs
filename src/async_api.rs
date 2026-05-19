@@ -145,9 +145,7 @@ unsafe extern "C" fn adapter_init_async_cb(
     } else if !result.is_null() {
         unsafe { AsyncCompletion::complete_ok(ctx, OpaquePtr(result)) };
     } else {
-        unsafe {
-            AsyncCompletion::<OpaquePtr>::complete_err(ctx, "null adapter pointer".into())
-        };
+        unsafe { AsyncCompletion::<OpaquePtr>::complete_err(ctx, "null adapter pointer".into()) };
     }
 }
 
@@ -179,9 +177,7 @@ unsafe extern "C" fn adapter_compat_async_cb(
         unsafe { ffi::fm_string_free(result.cast::<std::ffi::c_char>()) };
         unsafe { AsyncCompletion::complete_ok(ctx, s) };
     } else {
-        unsafe {
-            AsyncCompletion::<String>::complete_err(ctx, "null compatibility result".into())
-        };
+        unsafe { AsyncCompletion::<String>::complete_err(ctx, "null compatibility result".into()) };
     }
 }
 
@@ -244,15 +240,11 @@ impl Future for RespondGeneratingFuture {
                 message: msg,
             })
             .and_then(|json| {
-                let response: AsyncBridgeStructuredResponse =
-                    serde_json::from_str(&json)
-                        .map_err(|e| FMError::DecodingFailure(e.to_string()))?;
+                let response: AsyncBridgeStructuredResponse = serde_json::from_str(&json)
+                    .map_err(|e| FMError::DecodingFailure(e.to_string()))?;
                 Ok(SessionResponse {
                     content: GeneratedContent::from_bridge_payload(response.content, true)?,
-                    raw_content: GeneratedContent::from_bridge_payload(
-                        response.raw_content,
-                        true,
-                    )?,
+                    raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
                     transcript: Transcript::from_json_str(&response.transcript_json)?,
                 })
             })
@@ -547,6 +539,9 @@ fn build_request_json_inner(
             "seed": options.sampling_seed(),
         }),
     };
+    let include_schema_in_prompt = schema.map_or(include_schema_in_prompt, |schema| {
+        schema.effective_include_schema_in_prompt(include_schema_in_prompt)
+    });
     let payload = serde_json::to_string(&json!({
         "prompt": prompt.to_bridge_value(),
         "options": {
@@ -554,7 +549,7 @@ fn build_request_json_inner(
             "maximumResponseTokens": options.maximum_response_tokens(),
             "sampling": sampling,
         },
-        "schemaJSON": schema.map(GenerationSchema::json_schema),
+        "schemaJSON": schema.map(GenerationSchema::bridge_request_json),
         "includeSchemaInPrompt": include_schema_in_prompt,
     }))
     .map_err(|e| FMError::InvalidArgument(format!("request not JSON-serializable: {e}")))?;

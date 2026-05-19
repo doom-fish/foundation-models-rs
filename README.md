@@ -8,9 +8,9 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 - **Streaming** — text deltas and structured-generation snapshots
 - **Async API** — executor-agnostic `Future` wrappers for `respond(to:)`, `respond(to:generating:)`, and adapter lifecycle (see `async_api` module)
 - **Tool calling** — register Rust callbacks as `FoundationModels` `Tool`s
-- **Structured generation** — JSON-schema validation, dynamic schemas, string-choice schemas, array guides, and Rust `Generable` traits
+- **Structured generation** — JSON-schema validation, dynamic schemas, string-choice schemas, array guides, explicit nil-representation helpers, and Rust `Generable` traits
 - **Structured content helpers** — typed `GenerationId`, string-backed `Decimal`, `GeneratedContentKind`, and generated-content builders with optional IDs
-- **System model configuration** — availability, use cases, guardrails, locales, and adapter handles
+- **System model configuration** — availability, use cases, guardrails, locales, adapter handles, and async token counting
 - **Transcript support** — typed transcript inspection plus raw JSON round-tripping
 - **Response / tool definitions** — `ResponseFormat::generating`, inferred `Tool::generable`, and transcript `ToolDefinition` helpers
 - **Typed error metadata** — `FMError` accessors for recovery suggestions, refusal helpers, tool-call details, and generation/schema/adapter-error contexts
@@ -27,7 +27,7 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.9.0", features = ["macos_26_0"] }
+foundation-models = { version = "0.10.0", features = ["macos_26_0"] }
 ```
 
 ## Async API
@@ -37,7 +37,7 @@ work with any async runtime (Tokio, async-std, smol, pollster, …):
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.9.0", features = ["macos_26_0", "async"] }
+foundation-models = { version = "0.10.0", features = ["macos_26_0", "async"] }
 ```
 
 ```rust,no_run
@@ -61,6 +61,7 @@ pollster::block_on(async {
 | `AsyncSession::respond_generating` | `LanguageModelSession.respond(to:generating:)` |
 | `AsyncAdapter::from_name` | `SystemLanguageModel.Adapter init(name:)` |
 | `AsyncAdapter::compatibility` | `Adapter.compatibleAdapterIdentifiers(name:)` |
+| `SystemLanguageModel::token_count` | `SystemLanguageModel.tokenCount(for:)` |
 
 > **Tier 2 note:** `LanguageModelSession.streamResponse(to:)` is an `AsyncSequence`
 > (multi-fire stream). It is deferred to Tier 2. Use `LanguageModelSession::stream`
@@ -193,7 +194,7 @@ cargo run --example 07_schema_surface --features macos_26_0
 - `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` is not wrapped because it depends on `BackgroundAssets.AssetPack`, which this crate does not expose.
 - `GenerationID` now round-trips as `GenerationId` via `GeneratedContent::generation_id_handle()`; `GeneratedContent::generation_id()` remains as a best-effort string helper.
 - Typed generation/schema/adapter error metadata plus refusal helpers are available through `FMError::{generation_error_context, adapter_asset_error_context, schema_error_context, recovery_suggestion, failure_reason, refusal, tool_call_error}`.
-- Xcode 26.2's `FoundationModels.swiftinterface` does **not** expose standalone `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, or `Streaming` symbols; see [`COVERAGE.md`](COVERAGE.md) for the audited matrix.
+- Xcode 26.5's `FoundationModels.swiftinterface` does **not** expose standalone `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, or `Streaming` symbols; see [`COVERAGE.md`](COVERAGE.md) for the audited matrix.
 
 ## License
 

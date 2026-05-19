@@ -244,7 +244,12 @@ fn swift_aliases() -> std::collections::BTreeMap<&'static str, &'static str> {
 #[test]
 fn system_language_model_coverage() {
     let si = read_swiftinterface();
-    let apple = extract_type_surface(&si, "SystemLanguageModel");
+    let mut apple = extract_type_surface(&si, "SystemLanguageModel");
+    if si.contains("extension FoundationModels.SystemLanguageModel")
+        && si.contains("func tokenCount")
+    {
+        apple.insert("tokenCount".to_string());
+    }
     let referenced = references_in_bridge(&apple);
     let omitted: BTreeSet<String> = [
         // Compiler-synthesized / nested helper types not surfaced 1:1 in Rust.

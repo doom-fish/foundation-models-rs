@@ -182,6 +182,40 @@ public func fm_system_model_supports_locale(
     return false
 }
 
+@_cdecl("fm_system_model_token_count_prompt_async")
+public func fm_system_model_token_count_prompt_async(
+    _ modelPtr: UnsafeMutableRawPointer?,
+    _ prompt: UnsafePointer<CChar>,
+    _ ctx: UnsafeMutableRawPointer?,
+    _ cb: @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafePointer<CChar>?,
+        UnsafeMutableRawPointer?
+    ) -> Void
+) {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.4, *) {
+        let model = systemModel(from: modelPtr)
+        let promptValue = Prompt(String(cString: prompt))
+        Task.detached {
+            do {
+                let count = try await model.tokenCount(for: promptValue)
+                if let dup = ffiString(String(count)) {
+                    cb(UnsafeMutableRawPointer(dup), nil, ctx)
+                } else {
+                    "Failed to allocate token-count result".withCString { cb(nil, $0, ctx) }
+                }
+            } catch {
+                let (_, message) = mapError(error)
+                message.withCString { cb(nil, $0, ctx) }
+            }
+        }
+        return
+    }
+    #endif
+    "FoundationModels token count requires macOS 26.4 or newer".withCString { cb(nil, $0, ctx) }
+}
+
 @_cdecl("fm_adapter_create_from_file")
 public func fm_adapter_create_from_file(
     _ filePath: UnsafePointer<CChar>,

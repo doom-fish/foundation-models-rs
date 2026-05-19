@@ -232,7 +232,7 @@ impl ToolRegistry {
                 json!({
                     "name": tool.spec.name,
                     "description": tool.spec.description,
-                    "parametersJSON": tool.spec.parameters.json_schema(),
+                    "parametersJSON": tool.spec.parameters.bridge_request_json(),
                     "includesSchemaInInstructions": tool.spec.includes_schema_in_instructions,
                 })
             })

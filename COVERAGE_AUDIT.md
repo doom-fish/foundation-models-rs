@@ -1,7 +1,7 @@
-# foundation-models coverage audit (vs MacOSX26.2.sdk)
+# foundation-models coverage audit (vs MacOSX26.5.sdk)
 
-SDK_PUBLIC_SYMBOLS: 378
-VERIFIED: 263
+SDK_PUBLIC_SYMBOLS: 382
+VERIFIED: 267
 GAPS: 0
 EXEMPT: 115
 COVERAGE_PCT: 100%
@@ -151,6 +151,7 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `SystemLanguageModel.init(adapter: FoundationModels.SystemLanguageModel.Adapter, guardrails: FoundationModels.SystemLanguageModel.Guardrails = .default)` | Init | `FoundationModels.swiftinterface:L637` | `SystemLanguageModel::{availability, is_available, default_model, with_use_case, with_adapter, supported_languages, supports_locale}` |
 | `SystemLanguageModel.supportedLanguages` | Var | `FoundationModels.swiftinterface:L638` | `SystemLanguageModel::{availability, is_available, default_model, with_use_case, with_adapter, supported_languages, supports_locale}` |
 | `SystemLanguageModel.supportsLocale(_ locale: Foundation.Locale = Locale.current)` | Func | `FoundationModels.swiftinterface:L641` | `SystemLanguageModel::{availability, is_available, default_model, with_use_case, with_adapter, supported_languages, supports_locale}` |
+| `SystemLanguageModel.tokenCount(for prompt: some PromptRepresentable)` | Func | `FoundationModels.swiftinterface:L599` | `SystemLanguageModel::token_count / ConfiguredSystemLanguageModel::token_count` |
 | `SystemLanguageModel.Adapter` | Struct | `FoundationModels.swiftinterface:L655` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` |
 | `SystemLanguageModel.Adapter.creatorDefinedMetadata` | Var | `FoundationModels.swiftinterface:L656` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` |
 | `SystemLanguageModel.Adapter.init(fileURL: Foundation.URL)` | Init | `FoundationModels.swiftinterface:L665` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` |
@@ -234,8 +235,10 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `Tool.parameters` | Var | `FoundationModels.swiftinterface:L1201` | `Tool / ToolSpec` |
 | `Tool.includesSchemaInInstructions` | Var | `FoundationModels.swiftinterface:L1202` | `Tool / ToolSpec` |
 | `Tool.call(arguments: Self.Arguments)` | Func | `FoundationModels.swiftinterface:L1203` | `Tool::{new, json, generable} handler closure` |
-| `DynamicGenerationSchema` | Struct | `FoundationModels.swiftinterface:L1281` | `schema::DynamicGenerationSchema` |
-| `DynamicGenerationSchema.init(name: Swift.String, description: Swift.String? = nil, properties: [FoundationModels.DynamicGenerationSchema.Property])` | Init | `FoundationModels.swiftinterface:L1283` | `DynamicGenerationSchema / DynamicGenerationProperty` |
+| `DynamicGenerationSchema` | Struct | `FoundationModels.swiftinterface:L1271` | `schema::DynamicGenerationSchema` |
+| `DynamicGenerationSchema.null` | Var | `FoundationModels.swiftinterface:L1275` | `DynamicGenerationSchema::{NULL, null}` |
+| `DynamicGenerationSchema.init(name: Swift.String, description: Swift.String? = nil, properties: [FoundationModels.DynamicGenerationSchema.Property])` | Init | `FoundationModels.swiftinterface:L1278` | `DynamicGenerationSchema::{object, new_with_nil_repr} / DynamicGenerationProperty` |
+| `DynamicGenerationSchema.init(name: Swift.String, description: Swift.String? = nil, representNilExplicitlyInGeneratedContent: Swift.Bool, properties: [FoundationModels.DynamicGenerationSchema.Property])` | Init | `FoundationModels.swiftinterface:L1282` | `DynamicGenerationSchema::new_with_nil_repr / GenerationSchema::from_dynamic()` |
 | `DynamicGenerationSchema.init(name: Swift.String, description: Swift.String? = nil, anyOf choices: [FoundationModels.DynamicGenerationSchema])` | Init | `FoundationModels.swiftinterface:L1286` | `DynamicGenerationSchema / DynamicGenerationProperty` |
 | `DynamicGenerationSchema.init(name: Swift.String, description: Swift.String? = nil, anyOf choices: [Swift.String])` | Init | `FoundationModels.swiftinterface:L1289` | `DynamicGenerationSchema / DynamicGenerationProperty` |
 | `DynamicGenerationSchema.init(arrayOf itemSchema: FoundationModels.DynamicGenerationSchema, minimumElements: Swift.Int? = nil, maximumElements: Swift.Int? = nil)` | Init | `FoundationModels.swiftinterface:L1292` | `DynamicGenerationSchema / DynamicGenerationProperty` |
@@ -260,7 +263,8 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `GenerationSchema.Property.init(name: Swift.String, description: Swift.String? = nil, type: Value?.Type, guides: [FoundationModels.GenerationGuide<Value>] = [])` | Init | `FoundationModels.swiftinterface:L1355` | `DynamicGenerationProperty + GenerationSchema::from_dynamic()` |
 | `GenerationSchema.Property.init(name: Swift.String, description: Swift.String? = nil, type: Swift.String.Type, guides: [_StringProcessing.Regex<RegexOutput>] = [])` | Init | `FoundationModels.swiftinterface:L1358` | `DynamicGenerationProperty + GenerationSchema::from_dynamic()` |
 | `GenerationSchema.Property.init(name: Swift.String, description: Swift.String? = nil, type: Swift.String?.Type, guides: [_StringProcessing.Regex<RegexOutput>] = [])` | Init | `FoundationModels.swiftinterface:L1361` | `DynamicGenerationProperty + GenerationSchema::from_dynamic()` |
-| `GenerationSchema.init(type: any FoundationModels.Generable.Type, description: Swift.String? = nil, properties: [FoundationModels.GenerationSchema.Property])` | Init | `FoundationModels.swiftinterface:L1368` | `GenerationSchema::{from_json_schema, from_dynamic}` |
+| `GenerationSchema.init(type: any FoundationModels.Generable.Type, description: Swift.String? = nil, properties: [FoundationModels.GenerationSchema.Property])` | Init | `FoundationModels.swiftinterface:L1343` | `GenerationSchema::{new, from_json_schema, from_dynamic}` |
+| `GenerationSchema.init(type: any FoundationModels.Generable.Type, description: Swift.String? = nil, representNilExplicitlyInGeneratedContent: Swift.Bool, properties: [FoundationModels.GenerationSchema.Property])` | Init | `FoundationModels.swiftinterface:L1347` | `GenerationSchema::new_with_nil_repr` |
 | `GenerationSchema.init(type: any FoundationModels.Generable.Type, description: Swift.String? = nil, anyOf choices: [Swift.String])` | Init | `FoundationModels.swiftinterface:L1371` | `GenerationSchema::{from_json_schema, from_dynamic}` |
 | `GenerationSchema.init(type: any FoundationModels.Generable.Type, description: Swift.String? = nil, anyOf types: [any FoundationModels.Generable.Type])` | Init | `FoundationModels.swiftinterface:L1374` | `GenerationSchema::{from_json_schema, from_dynamic}` |
 | `GenerationSchema.init(root: FoundationModels.DynamicGenerationSchema, dependencies: [FoundationModels.DynamicGenerationSchema])` | Init | `FoundationModels.swiftinterface:L1376` | `GenerationSchema::{from_json_schema, from_dynamic}` |

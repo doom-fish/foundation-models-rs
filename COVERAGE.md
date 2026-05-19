@@ -1,4 +1,4 @@
-# FoundationModels SDK coverage (macOS 26.2 / Xcode 26.2)
+# FoundationModels SDK coverage (macOS 26.5 / Xcode 26.5)
 
 Audited against:
 
@@ -11,26 +11,26 @@ Audited against:
 | SDK symbol / area | Status | Rust / bridge coverage | Notes |
 | --- | --- | --- | --- |
 | `LanguageModelSession` | ✅ implemented | `src/session/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/FoundationModels.swift`, `SessionExtras.swift` | Covers session construction, transcript restore/export, `respond`, structured generation, streaming, tool calling, feedback attachments, `prewarm(promptPrefix:)`, and `isResponding`. |
-| `SystemLanguageModel` | ✅ implemented | `src/model/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/ModelBridge.swift` | Covers availability, use cases, guardrails, configured handles, locale support, and adapters. |
+| `SystemLanguageModel` | ✅ implemented | `src/model/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/ModelBridge.swift` | Covers availability, use cases, guardrails, configured handles, locale support, adapters, and async `token_count`. |
 | `Tool` | ✅ implemented | `src/tool.rs`, `swift-bridge/Sources/FoundationModelsBridge/ToolsBridge.swift` | Rust exposes dynamic tools plus schema-inferred `Tool::generable`; Swift bridge materializes them as FoundationModels `Tool`s. |
 | `ToolCall` | ✅ implemented | `src/transcript.rs` | Covered as `foundation_models::ToolCall` / `Transcript::ToolCalls`. |
 | `Transcript` | ✅ implemented | `src/transcript.rs`, `swift-bridge/Sources/FoundationModelsBridge/BridgeJSON.swift` | Covers transcript round-tripping, typed entries, collection helpers, and session restoration. |
 | `TranscriptEntry` | ✅ implemented | `src/transcript.rs` | Re-exported as `TranscriptEntry` (`Entry` enum) with typed variants and `id()` helper. |
 | `GenerationOptions` | ✅ implemented | `src/generation/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/FoundationModels.swift`, `BridgeJSON.swift` | Covers temperature, max tokens, greedy / top-k / top-p sampling, and deterministic seeds. |
-| `GenerationSchema` | ✅ implemented | `src/schema.rs`, `swift-bridge/Sources/FoundationModelsBridge/SchemaBridge.swift` | Covers validated schemas, dynamic schemas, string-choice unions, and Swift-backed compilation. |
+| `GenerationSchema` | ✅ implemented | `src/schema.rs`, `swift-bridge/Sources/FoundationModelsBridge/SchemaBridge.swift` | Covers validated schemas, dynamic schemas, typed property schemas, explicit nil representation, `.null`, string-choice unions, and Swift-backed compilation. |
 | `GenerationGuide` | ✅ implemented | `src/schema.rs`, `swift-bridge/Sources/FoundationModelsBridge/SchemaBridge.swift` | Covers string / numeric / decimal guides plus array count / element guides. |
 | `Generable` | ✅ implemented | `src/schema.rs`, `src/content.rs` | Rust trait mirrors the SDK protocol and covers primitives, arrays, options, and `GeneratedContent`. |
 | `Instructions` | ✅ implemented | `src/prompt.rs`, `swift-bridge/Sources/FoundationModelsBridge/BridgeJSON.swift` | Covers text + structured instructions and system-instructions session builders. |
 | `Prompt` | ✅ implemented | `src/prompt.rs`, `swift-bridge/Sources/FoundationModelsBridge/BridgeJSON.swift` | Covers text + structured prompts, response requests, and prewarm prompt prefixes. |
-| `PromptTag` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`. |
-| `LanguageModelInputContent` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`. |
-| `LanguageModelOutputContent` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`. |
+| `PromptTag` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
+| `LanguageModelInputContent` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
+| `LanguageModelOutputContent` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
 | `ResponseFormat` | ✅ implemented | `src/prompt.rs`, `src/transcript.rs` | Covers schema-backed response formats plus `ResponseFormat::generating`. |
-| `Conversation` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`; transcript/session history is represented by `Transcript`. |
+| `Conversation` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`; transcript/session history is represented by `Transcript`. |
 | `ToolDefinition` | ✅ implemented | `src/prompt.rs`, `src/tool.rs`, `src/transcript.rs` | Covers explicit definitions plus conversion from `Tool` / `ToolSpec`. |
-| `ToolCallingMode` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`. |
-| `SystemPrompt` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`; system prompting is represented by `Instructions`. |
-| `Examples` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.2 `FoundationModels.swiftinterface`. |
+| `ToolCallingMode` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
+| `SystemPrompt` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`; system prompting is represented by `Instructions`. |
+| `Examples` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
 | `Streaming` | ✅ implemented | `src/session/mod.rs` | Covered by `stream`, `stream_prompt`, `stream_generated`, `StreamEvent`, and `StructuredStreamEvent`. The SDK does not expose a standalone `Streaming` type. |
 
 ## Additional audited SDK items

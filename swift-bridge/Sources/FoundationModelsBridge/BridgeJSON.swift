@@ -316,7 +316,38 @@ func decodeGenerationSchema(from json: String) throws -> GenerationSchema {
             NSLocalizedDescriptionKey: "schema JSON is not valid UTF-8"
         ])
     }
-    return try JSONDecoder().decode(GenerationSchema.self, from: data)
+    do {
+        return try JSONDecoder().decode(GenerationSchema.self, from: data)
+    } catch {
+        guard let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw error
+        }
+        if let rootJSON = parsed["root"] {
+            let root = try bridgeBuildDynamicSchema(from: rootJSON, name: "Root")
+            let dependencies = try ((parsed["dependencies"] as? [Any]) ?? []).enumerated().map { index, value in
+                try bridgeBuildDynamicSchema(from: value, name: "Dependency\(index)")
+            }
+            return try GenerationSchema(root: root, dependencies: dependencies)
+        }
+        if parsed["properties"] is [Any] || parsed["representNilExplicitlyInGeneratedContent"] != nil {
+            let properties = try ((parsed["properties"] as? [Any]) ?? []).map { try typedSchemaProperty(from: $0) }
+            let description = parsed["description"] as? String
+            let explicitNil = (parsed["representNilExplicitlyInGeneratedContent"] as? Bool) ?? false
+            if explicitNil {
+                if #available(macOS 26.4, *) {
+                    return GenerationSchema(
+                        type: GeneratedContent.self,
+                        description: description,
+                        representNilExplicitlyInGeneratedContent: true,
+                        properties: properties
+                    )
+                }
+                throw schemaBridgeError("explicit nil representation requires macOS 26.4 or newer")
+            }
+            return GenerationSchema(type: GeneratedContent.self, description: description, properties: properties)
+        }
+        throw error
+    }
 }
 
 @available(macOS 26.0, *)
