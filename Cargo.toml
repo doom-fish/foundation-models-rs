@@ -1,6 +1,6 @@
 [package]
 name = "foundation-models"
-version = "0.10.0"
+version = "0.10.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/foundation-models-rs"
@@ -9,7 +9,7 @@ description = "Safe Rust bindings for Apple's FoundationModels framework - on-de
 authors = ["Per Johansson <per@doom.fish>"]
 keywords = ["foundation-models", "llm", "macos", "ai", "apple-intelligence"]
 categories = ["api-bindings", "os::macos-apis"]
-rust-version = "1.70"
+rust-version = "1.76"
 readme = "README.md"
 build = "build.rs"
 include = [
