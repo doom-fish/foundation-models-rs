@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.11.2] - 2026-05-20
+
+- Phase 32 completeness + async sweep.
+- Added `AsyncAdapter::compile` for `SystemLanguageModel.Adapter.compile()` and fixed the feature-gated README async example/doctest.
+
 ## [0.11.1] - 2026-05-20
 
 - Clippy hygiene sweep: cleared all `-D warnings` lints across the crate. No public API change.

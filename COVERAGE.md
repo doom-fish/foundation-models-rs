@@ -11,7 +11,7 @@ Audited against:
 | SDK symbol / area | Status | Rust / bridge coverage | Notes |
 | --- | --- | --- | --- |
 | `LanguageModelSession` | ✅ implemented | `src/session/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/FoundationModels.swift`, `SessionExtras.swift` | Covers session construction, transcript restore/export, `respond`, structured generation, streaming, tool calling, feedback attachments, `prewarm(promptPrefix:)`, and `isResponding`. |
-| `SystemLanguageModel` | ✅ implemented | `src/model/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/ModelBridge.swift` | Covers availability, use cases, guardrails, configured handles, locale support, adapters, and async `token_count`. |
+| `SystemLanguageModel` | ✅ implemented | `src/model/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/ModelBridge.swift` | Covers availability, use cases, guardrails, configured handles, locale support, adapters, async `token_count`, and async adapter compilation. |
 | `Tool` | ✅ implemented | `src/tool.rs`, `swift-bridge/Sources/FoundationModelsBridge/ToolsBridge.swift` | Rust exposes dynamic tools plus schema-inferred `Tool::generable`; Swift bridge materializes them as FoundationModels `Tool`s. |
 | `ToolCall` | ✅ implemented | `src/transcript.rs` | Covered as `foundation_models::ToolCall` / `Transcript::ToolCalls`. |
 | `Transcript` | ✅ implemented | `src/transcript.rs`, `swift-bridge/Sources/FoundationModelsBridge/BridgeJSON.swift` | Covers transcript round-tripping, typed entries, collection helpers, and session restoration. |

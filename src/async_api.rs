@@ -12,6 +12,7 @@
 //! | [`AsyncSession::respond_generating`] | `LanguageModelSession.respond(to:generating:)` | Returns `SessionResponse<GeneratedContent>` |
 //! | [`AsyncAdapter::from_name`] | `SystemLanguageModel.Adapter init(name:)` | Returns `Adapter` |
 //! | [`AsyncAdapter::compatibility`] | `SystemLanguageModel.Adapter.compatibility(for:)` | Returns `Vec<String>` |
+//! | [`AsyncAdapter::compile`] | `SystemLanguageModel.Adapter.compile()` | Returns `()` |
 //!
 //! ## Tier 2 note
 //!
@@ -181,6 +182,37 @@ unsafe extern "C" fn adapter_compat_async_cb(
     }
 }
 
+/// # Safety
+///
+/// `ctx` must be a valid `AsyncCompletion<()>` context pointer.
+unsafe extern "C" fn adapter_compile_async_cb(
+    context: *mut c_void,
+    response: *mut std::ffi::c_char,
+    error: *mut std::ffi::c_char,
+    status: i32,
+) {
+    if !response.is_null() {
+        unsafe { ffi::fm_string_free(response) };
+    }
+
+    if status == ffi::status::OK {
+        if !error.is_null() {
+            unsafe { ffi::fm_string_free(error) };
+        }
+        unsafe { AsyncCompletion::complete_ok(context, ()) };
+        return;
+    }
+
+    let message = if error.is_null() {
+        crate::error::from_swift(status, std::ptr::null_mut()).to_string()
+    } else {
+        let message = unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned();
+        unsafe { ffi::fm_string_free(error) };
+        message
+    };
+    unsafe { AsyncCompletion::<()>::complete_err(context, message) };
+}
+
 // ============================================================================
 // RespondFuture — LanguageModelSession.respond(to:)
 // ============================================================================
@@ -308,6 +340,33 @@ impl Future for AdapterCompatibilityFuture {
                     serde_json::from_str::<Vec<String>>(&json)
                         .map_err(|e| FMError::DecodingFailure(e.to_string()))
                 })
+        })
+    }
+}
+
+/// Future returned by [`AsyncAdapter::compile`].
+///
+/// Resolves to `Result<(), FMError>`.
+pub struct CompileAdapterFuture {
+    inner: AsyncCompletionFuture<()>,
+}
+
+impl std::fmt::Debug for CompileAdapterFuture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompileAdapterFuture")
+            .finish_non_exhaustive()
+    }
+}
+
+impl Future for CompileAdapterFuture {
+    type Output = Result<(), FMError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.inner).poll(cx).map(|r| {
+            r.map_err(|message| FMError::Unknown {
+                code: ffi::status::UNKNOWN,
+                message,
+            })
         })
     }
 }
@@ -493,6 +552,16 @@ impl AsyncAdapter {
             ffi::fm_adapter_compatibility_async(cname.as_ptr(), ctx, adapter_compat_async_cb);
         }
         Ok(AdapterCompatibilityFuture { inner: future })
+    }
+
+    /// Async version of `SystemLanguageModel.Adapter.compile()`.
+    #[must_use]
+    pub fn compile(adapter: &Adapter) -> CompileAdapterFuture {
+        let (future, ctx) = AsyncCompletion::create();
+        unsafe {
+            ffi::fm_adapter_compile(adapter.ptr, ctx, adapter_compile_async_cb);
+        }
+        CompileAdapterFuture { inner: future }
     }
 }
 
