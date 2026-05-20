@@ -55,6 +55,7 @@ impl LanguageModelSession {
     ///
     /// Used internally by `async_api` to pass the session pointer to FFI
     /// callbacks without exposing `ptr` as a public field.
+    #[cfg(feature = "async")]
     pub(crate) fn as_ptr(&self) -> *mut c_void {
         self.ptr
     }
