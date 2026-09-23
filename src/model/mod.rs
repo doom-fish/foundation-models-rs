@@ -120,7 +120,7 @@ impl SystemLanguageModel {
     ) -> Result<ConfiguredSystemLanguageModel, FMError> {
         let mut error: *mut c_char = ptr::null_mut();
         let ptr = unsafe {
-            ffi::fm_system_model_create(use_case.as_ffi(), guardrails.as_ffi(), &mut error)
+            ffi::fm_system_model_create(use_case.as_ffi(), guardrails.as_ffi(), &raw mut error)
         };
         if ptr.is_null() {
             return Err(from_swift(ffi::status::MODEL_UNAVAILABLE, error));
@@ -140,7 +140,11 @@ impl SystemLanguageModel {
     ) -> Result<ConfiguredSystemLanguageModel, FMError> {
         let mut error: *mut c_char = ptr::null_mut();
         let ptr = unsafe {
-            ffi::fm_system_model_create_with_adapter(adapter.ptr, guardrails.as_ffi(), &mut error)
+            ffi::fm_system_model_create_with_adapter(
+                adapter.ptr,
+                guardrails.as_ffi(),
+                &raw mut error,
+            )
         };
         if ptr.is_null() {
             return Err(from_swift(ffi::status::MODEL_UNAVAILABLE, error));
@@ -368,7 +372,7 @@ impl Adapter {
             )
         })?;
         let mut error: *mut c_char = ptr::null_mut();
-        let ptr = unsafe { ffi::fm_adapter_create_from_file(path.as_ptr(), &mut error) };
+        let ptr = unsafe { ffi::fm_adapter_create_from_file(path.as_ptr(), &raw mut error) };
         if ptr.is_null() {
             return Err(from_swift(ffi::status::ADAPTER_INVALID_ASSET, error));
         }
@@ -385,7 +389,7 @@ impl Adapter {
             FMError::InvalidArgument(format!("adapter name contains NUL byte: {error}").into())
         })?;
         let mut error: *mut c_char = ptr::null_mut();
-        let ptr = unsafe { ffi::fm_adapter_create_from_name(name.as_ptr(), &mut error) };
+        let ptr = unsafe { ffi::fm_adapter_create_from_name(name.as_ptr(), &raw mut error) };
         if ptr.is_null() {
             return Err(from_swift(ffi::status::ADAPTER_INVALID_NAME, error));
         }
@@ -434,7 +438,7 @@ impl Adapter {
     /// Returns an [`FMError`] if cleanup fails.
     pub fn remove_obsolete_adapters() -> Result<(), FMError> {
         let mut error: *mut c_char = ptr::null_mut();
-        let status = unsafe { ffi::fm_adapter_remove_obsolete(&mut error) };
+        let status = unsafe { ffi::fm_adapter_remove_obsolete(&raw mut error) };
         if status != ffi::status::OK {
             return Err(from_swift(status, error));
         }

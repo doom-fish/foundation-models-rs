@@ -40,8 +40,9 @@ impl GenerationSchema {
             )
         })?;
         let mut error_ptr: *mut c_char = core::ptr::null_mut();
-        let status =
-            unsafe { ffi::fm_generation_schema_validate_json(schema_c.as_ptr(), &mut error_ptr) };
+        let status = unsafe {
+            ffi::fm_generation_schema_validate_json(schema_c.as_ptr(), &raw mut error_ptr)
+        };
         if status != ffi::status::OK {
             return Err(crate::error::from_swift(status, error_ptr));
         }

@@ -365,7 +365,7 @@ impl LanguageModelSession {
         })?;
         let mut error: *mut c_char = ptr::null_mut();
         let status = unsafe {
-            ffi::fm_session_prewarm_prompt_json(self.ptr, prompt_json.as_ptr(), &mut error)
+            ffi::fm_session_prewarm_prompt_json(self.ptr, prompt_json.as_ptr(), &raw mut error)
         };
         if status != ffi::status::OK {
             return Err(crate::error::from_swift(status, error));
@@ -587,8 +587,8 @@ impl LanguageModelSession {
             ffi::fm_session_log_feedback_attachment_json(
                 self.ptr,
                 request_json.as_ptr(),
-                &mut length,
-                &mut error,
+                &raw mut length,
+                &raw mut error,
             )
         };
         if ptr.is_null() && !error.is_null() {
@@ -1316,14 +1316,14 @@ mod tests {
         bridge_string(&json!({ "kind": "text", "content": content }).to_string())
     }
 
-    fn text_stream(
-        panic_on_chunk: bool,
-    ) -> (
-        *mut c_void,
-        std::sync::Weak<TextStreamState>,
-        Arc<Mutex<Vec<Seen>>>,
-        mpsc::Receiver<Result<(), FMError>>,
-    ) {
+    struct TestStream {
+        context: *mut c_void,
+        weak: std::sync::Weak<TextStreamState>,
+        seen: Arc<Mutex<Vec<Seen>>>,
+        done_rx: mpsc::Receiver<Result<(), FMError>>,
+    }
+
+    fn text_stream(panic_on_chunk: bool) -> TestStream {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let recorder = Arc::clone(&seen);
         let (done_tx, done_rx) = mpsc::channel();
@@ -1347,8 +1347,12 @@ mod tests {
                 done_tx: Some(done_tx),
             }),
         });
-        let weak = Arc::downgrade(&state);
-        (Arc::into_raw(state).cast_mut().cast(), weak, seen, done_rx)
+        TestStream {
+            weak: Arc::downgrade(&state),
+            context: Arc::into_raw(state).cast_mut().cast(),
+            seen,
+            done_rx,
+        }
     }
 
     fn reassemble(events: &[Seen]) -> String {
@@ -1364,7 +1368,12 @@ mod tests {
     }
 
     fn feed(snapshots: &[&str]) -> Vec<Seen> {
-        let (context, weak, seen, done_rx) = text_stream(false);
+        let TestStream {
+            context,
+            weak,
+            seen,
+            done_rx,
+        } = text_stream(false);
         for content in snapshots {
             unsafe {
                 json_text_stream_trampoline(context, snapshot(content), false, ffi::status::OK)
@@ -1421,7 +1430,12 @@ mod tests {
 
     #[test]
     fn a_panicking_callback_finishes_the_stream_but_keeps_the_state_until_swift_is_done() {
-        let (context, weak, seen, done_rx) = text_stream(true);
+        let TestStream {
+            context,
+            weak,
+            seen,
+            done_rx,
+        } = text_stream(true);
         unsafe { json_text_stream_trampoline(context, snapshot("first"), false, ffi::status::OK) };
         assert_eq!(done_rx.recv().unwrap(), Err(callback_panicked()));
 
@@ -1438,7 +1452,12 @@ mod tests {
 
     #[test]
     fn stream_errors_are_typed_and_delivered_once() {
-        let (context, weak, seen, done_rx) = text_stream(false);
+        let TestStream {
+            context,
+            weak,
+            seen,
+            done_rx,
+        } = text_stream(false);
         let payload = bridge_string(&json!({ "message": "blocked" }).to_string());
         unsafe {
             json_text_stream_trampoline(context, payload, true, ffi::status::GUARDRAIL_VIOLATION)
@@ -1455,7 +1474,12 @@ mod tests {
 
     #[test]
     fn undecodable_snapshots_fail_the_stream_without_freeing_it() {
-        let (context, weak, _seen, done_rx) = text_stream(false);
+        let TestStream {
+            context,
+            weak,
+            done_rx,
+            ..
+        } = text_stream(false);
         unsafe {
             json_text_stream_trampoline(context, bridge_string("not json"), false, ffi::status::OK)
         };

@@ -55,7 +55,7 @@ where
 {
     let mut output: *mut c_char = core::ptr::null_mut();
     let mut error: *mut c_char = core::ptr::null_mut();
-    let status = call(&mut output, &mut error);
+    let status = call(&raw mut output, &raw mut error);
     if status != ffi::status::OK {
         if !output.is_null() {
             unsafe { ffi::fm_string_free(output) };
