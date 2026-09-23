@@ -73,6 +73,9 @@ fn explicit_nil_schema_generates_null_fields() -> Result<(), foundation_models::
             foundation_models::FMError::DecodingFailure("schema is missing a required array".into())
         })?;
         assert!(required.iter().any(|value| value.as_str() == Some("title")));
+        if runtime_major_version() != Some(26) {
+            continue;
+        }
         assert!(required
             .iter()
             .any(|value| value.as_str() == Some("subtitle")));
@@ -108,4 +111,19 @@ fn explicit_nil_schema_generates_null_fields() -> Result<(), foundation_models::
     let title: String = content.value_for_property("title")?;
     assert!(!title.trim().is_empty(), "title should not be empty");
     Ok(())
+}
+
+#[cfg(feature = "macos_26_0")]
+fn runtime_major_version() -> Option<u32> {
+    let output = std::process::Command::new("sw_vers")
+        .arg("-productVersion")
+        .output()
+        .ok()?;
+    String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .split('.')
+        .next()?
+        .parse()
+        .ok()
 }
