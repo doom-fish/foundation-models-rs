@@ -73,7 +73,13 @@
 
 #[cfg(feature = "backgroundassets")]
 #[cfg_attr(docsrs, doc(cfg(feature = "backgroundassets")))]
-pub use backgroundassets;
+#[deprecated(
+    since = "0.12.0",
+    note = "FoundationModels no longer links BackgroundAssets; depend on the `backgroundassets` crate directly"
+)]
+pub mod backgroundassets {
+    pub use ::backgroundassets::*;
+}
 
 pub mod content;
 pub mod error;
