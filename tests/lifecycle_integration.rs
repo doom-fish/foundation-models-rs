@@ -30,6 +30,16 @@ fn file_urls_that_do_not_parse_return_an_error() {
 }
 
 #[test]
+fn the_default_model_reports_a_context_size() {
+    if !model_available() {
+        return;
+    }
+    assert!(SystemLanguageModel::context_size() > 0);
+    let model = SystemLanguageModel::default_model().expect("default model");
+    assert_eq!(model.context_size(), SystemLanguageModel::context_size());
+}
+
+#[test]
 fn a_panicking_stream_callback_cancels_generation() {
     if !model_available() {
         return;
@@ -95,6 +105,10 @@ fn concatenated_stream_chunks_equal_the_final_reply() {
 mod async_lifecycle {
     use super::*;
     use foundation_models::async_api::AsyncSession;
+    use foundation_models::{
+        DynamicGenerationProperty, DynamicGenerationSchema, Instructions, Transcript,
+        TranscriptPrompt,
+    };
 
     #[test]
     fn dropping_a_future_cancels_its_generation() {
@@ -149,6 +163,51 @@ mod async_lifecycle {
         );
         if let Ok(reply) = reply {
             assert!(!reply.content.is_empty());
+        }
+    }
+
+    #[test]
+    fn token_counts_cover_every_input_kind() {
+        if !model_available() {
+            return;
+        }
+        let model = SystemLanguageModel::default_model().expect("default model");
+        let schema = GenerationSchema::from_dynamic(
+            DynamicGenerationSchema::object("Reply").with_property(
+                "text",
+                DynamicGenerationProperty::new(DynamicGenerationSchema::string()),
+            ),
+            [],
+        )
+        .expect("schema");
+        let tool = Tool::new(
+            "lookup_weather",
+            "Look up the current weather for a city.",
+            schema.clone(),
+            |_| Ok(ToolOutput::text("sunny")),
+        );
+        let transcript = Transcript::from_entries(vec![TranscriptEntry::Prompt(
+            TranscriptPrompt::new("What is the weather like?".into()),
+        )]);
+
+        let counts = pollster::block_on(async {
+            Ok::<_, FMError>([
+                SystemLanguageModel::token_count("hello world").await?,
+                model.token_count("hello world").await?,
+                model
+                    .token_count_for_instructions(Instructions::from("Answer briefly."))
+                    .await?,
+                model.token_count_for_tools(&[tool]).await?,
+                model.token_count_for_schema(&schema).await?,
+                model.token_count_for_transcript(&transcript).await?,
+            ])
+        });
+        match counts {
+            Ok(counts) => assert!(counts.iter().all(|&count| count > 0), "{counts:?}"),
+            Err(FMError::ModelUnavailable { message, .. }) if message.contains("26.4") => {
+                eprintln!("SKIP: token counting needs macOS 26.4");
+            }
+            Err(error) => panic!("token count failed: {error:?}"),
         }
     }
 }

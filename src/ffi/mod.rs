@@ -72,6 +72,7 @@ extern "C" {
         model: *mut c_void,
         locale_identifier: *const c_char,
     ) -> bool;
+    pub fn fm_system_model_context_size(model: *mut c_void) -> isize;
     pub fn fm_system_model_token_count_json_async(
         model: *mut c_void,
         kind: i32,
@@ -228,6 +229,10 @@ extern "C" {
 
 pub mod token_count_input {
     pub const PROMPT: i32 = 0;
+    pub const INSTRUCTIONS: i32 = 1;
+    pub const TOOLS: i32 = 2;
+    pub const SCHEMA: i32 = 3;
+    pub const TRANSCRIPT: i32 = 4;
 }
 
 /// Status codes mirrored 1:1 from the `FM_*` constants in Swift.

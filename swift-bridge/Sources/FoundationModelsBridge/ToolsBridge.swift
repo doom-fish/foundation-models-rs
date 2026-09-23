@@ -108,6 +108,30 @@ final class RustTool: Tool, @unchecked Sendable {
 }
 
 @available(macOS 26.0, *)
+struct DeclaredTool: Tool {
+    typealias Arguments = GeneratedContent
+    typealias Output = Prompt
+
+    let name: String
+    let description: String
+    let parameters: GenerationSchema
+    let includesSchemaInInstructions: Bool
+
+    init(spec: BridgeToolSpec) throws {
+        name = spec.name
+        description = spec.description
+        parameters = try decodeGenerationSchema(from: spec.parametersJSON)
+        includesSchemaInInstructions = spec.includesSchemaInInstructions
+    }
+
+    func call(arguments: GeneratedContent) async throws -> Prompt {
+        throw NSError(domain: "fm-tool", code: Int(FM_TOOL_CALL_FAILED), userInfo: [
+            NSLocalizedDescriptionKey: "tool `\(name)` was declared for token counting and cannot be called"
+        ])
+    }
+}
+
+@available(macOS 26.0, *)
 func buildTools(
     specsJSON: String?,
     owner: RustToolContext?,
@@ -125,4 +149,8 @@ func buildTools(
     return try specs.map { try RustTool(spec: $0, owner: owner, callback: callback) }
 }
 
+@available(macOS 26.0, *)
+func buildDeclaredTools(specsJSON: String) throws -> [any Tool] {
+    try decodeBridge(specsJSON, as: [BridgeToolSpec].self).map { try DeclaredTool(spec: $0) }
+}
 #endif

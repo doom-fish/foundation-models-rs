@@ -182,7 +182,21 @@ public func fm_system_model_supports_locale(
     return false
 }
 
+@_cdecl("fm_system_model_context_size")
+public func fm_system_model_context_size(_ modelPtr: UnsafeMutableRawPointer?) -> Int {
+    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+    if #available(macOS 26.0, *) {
+        return systemModel(from: modelPtr).contextSize
+    }
+    #endif
+    return 0
+}
+
 let FM_TOKEN_COUNT_PROMPT: Int32 = 0
+let FM_TOKEN_COUNT_INSTRUCTIONS: Int32 = 1
+let FM_TOKEN_COUNT_TOOLS: Int32 = 2
+let FM_TOKEN_COUNT_SCHEMA: Int32 = 3
+let FM_TOKEN_COUNT_TRANSCRIPT: Int32 = 4
 
 @_cdecl("fm_system_model_token_count_json_async")
 public func fm_system_model_token_count_json_async(
@@ -208,6 +222,14 @@ public func fm_system_model_token_count_json_async(
                 switch kind {
                 case FM_TOKEN_COUNT_PROMPT:
                     count = try await model.tokenCount(for: buildPrompt(from: decodeBridge(json, as: BridgePrompt.self)))
+                case FM_TOKEN_COUNT_INSTRUCTIONS:
+                    count = try await model.tokenCount(for: buildInstructions(from: decodeBridge(json, as: BridgeInstructions.self)))
+                case FM_TOKEN_COUNT_TOOLS:
+                    count = try await model.tokenCount(for: buildDeclaredTools(specsJSON: json))
+                case FM_TOKEN_COUNT_SCHEMA:
+                    count = try await model.tokenCount(for: decodeGenerationSchema(from: json))
+                case FM_TOKEN_COUNT_TRANSCRIPT:
+                    count = try await model.tokenCount(for: decodeTranscript(from: json))
                 default:
                     callback(context, nil, ffiString("unknown token count input kind \(kind)"), FM_INVALID_ARGUMENT)
                     return

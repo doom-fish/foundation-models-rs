@@ -13,8 +13,14 @@ use crate::async_api::PendingText;
 use crate::error::{from_swift, FMError, Unavailability};
 use crate::ffi;
 #[cfg(feature = "async")]
-use crate::prompt::ToPrompt;
+use crate::prompt::{ToInstructions, ToPrompt};
+#[cfg(feature = "async")]
+use crate::schema::GenerationSchema;
 use crate::session::wait_for_bridge_text;
+#[cfg(feature = "async")]
+use crate::tool::{tool_specs_json, Tool};
+#[cfg(feature = "async")]
+use crate::transcript::Transcript;
 
 fn availability_from_code(code: i32) -> Availability {
     match code {
@@ -43,6 +49,10 @@ fn json_string(ptr: *mut c_char) -> String {
         return String::from("[]");
     }
     owned_string(ptr)
+}
+
+fn context_size_of(model: *mut c_void) -> usize {
+    usize::try_from(unsafe { ffi::fm_system_model_context_size(model) }).unwrap_or(0)
 }
 
 #[cfg(feature = "async")]
@@ -153,6 +163,11 @@ impl SystemLanguageModel {
         })
     }
 
+    #[must_use]
+    pub fn context_size() -> usize {
+        context_size_of(ptr::null_mut())
+    }
+
     /// Count how many tokens the default system model would consume for a prompt.
     ///
     /// # Errors
@@ -203,6 +218,11 @@ impl ConfiguredSystemLanguageModel {
         })
     }
 
+    #[must_use]
+    pub fn context_size(&self) -> usize {
+        context_size_of(self.ptr)
+    }
+
     /// Count how many tokens this configured model would consume for a prompt.
     ///
     /// # Errors
@@ -216,6 +236,63 @@ impl ConfiguredSystemLanguageModel {
             self.ptr,
             ffi::token_count_input::PROMPT,
             prompt.to_prompt()?.to_bridge_json()?,
+        )?;
+        finish_token_count(pending).await
+    }
+
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    #[allow(clippy::future_not_send)]
+    pub async fn token_count_for_instructions(
+        &self,
+        instructions: impl ToInstructions,
+    ) -> Result<usize, FMError> {
+        let pending = start_token_count(
+            self.ptr,
+            ffi::token_count_input::INSTRUCTIONS,
+            instructions.to_instructions()?.to_bridge_json()?,
+        )?;
+        finish_token_count(pending).await
+    }
+
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    #[allow(clippy::future_not_send)]
+    pub async fn token_count_for_tools(&self, tools: &[Tool]) -> Result<usize, FMError> {
+        let pending = start_token_count(
+            self.ptr,
+            ffi::token_count_input::TOOLS,
+            tool_specs_json(tools)?,
+        )?;
+        finish_token_count(pending).await
+    }
+
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    #[allow(clippy::future_not_send)]
+    pub async fn token_count_for_schema(
+        &self,
+        schema: &GenerationSchema,
+    ) -> Result<usize, FMError> {
+        let pending = start_token_count(
+            self.ptr,
+            ffi::token_count_input::SCHEMA,
+            schema.bridge_request_json().to_owned(),
+        )?;
+        finish_token_count(pending).await
+    }
+
+    #[cfg(feature = "async")]
+    #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
+    #[allow(clippy::future_not_send)]
+    pub async fn token_count_for_transcript(
+        &self,
+        transcript: &Transcript,
+    ) -> Result<usize, FMError> {
+        let pending = start_token_count(
+            self.ptr,
+            ffi::token_count_input::TRANSCRIPT,
+            transcript.to_json_string()?,
         )?;
         finish_token_count(pending).await
     }
