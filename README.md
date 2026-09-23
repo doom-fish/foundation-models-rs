@@ -6,11 +6,12 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 - **Sessions and multi-turn chat** — create, restore, inspect, and persist `LanguageModelSession`s
 - **Streaming** — text deltas and structured-generation snapshots
+- **Cancellation** — dropping a future, or leaving a stream early, cancels the generation; the next request on the session waits for it to wind down instead of failing with `ConcurrentRequests`
 - **Async API** — executor-agnostic `Future` wrappers for `respond(to:)`, `respond(to:generating:)`, and adapter lifecycle (see `async_api` module)
 - **Tool calling** — register Rust callbacks as `FoundationModels` `Tool`s
 - **Structured generation** — JSON-schema validation, dynamic schemas, string-choice schemas, array guides, explicit nil-representation helpers, and Rust `Generable` traits
 - **Structured content helpers** — typed `GenerationId`, string-backed `Decimal`, `GeneratedContentKind`, and generated-content builders with optional IDs
-- **System model configuration** — availability, use cases, guardrails, locales, adapter handles, and async token counting
+- **System model configuration** — availability, use cases, guardrails, locales, adapter handles, context size, and async token counting
 - **Transcript support** — typed transcript inspection plus raw JSON round-tripping
 - **Response / tool definitions** — `ResponseFormat::generating`, inferred `Tool::generable`, and transcript `ToolDefinition` helpers
 - **Typed error metadata** — `FMError` accessors for recovery suggestions, refusal helpers, tool-call details, and generation/schema/adapter-error contexts
@@ -66,6 +67,11 @@ pollster::block_on(async {
 | `AsyncAdapter::compatibility` | `Adapter.compatibleAdapterIdentifiers(name:)` |
 | `AsyncAdapter::compile` | `SystemLanguageModel.Adapter.compile()` |
 | `SystemLanguageModel::token_count` | `SystemLanguageModel.tokenCount(for:)` |
+| `ConfiguredSystemLanguageModel::token_count_for_{instructions,tools,schema,transcript}` | `SystemLanguageModel.tokenCount(for:)` overloads (macOS 26.4+) |
+
+Futures own everything they need, so a session may be dropped while one is
+pending. Dropping a future cancels its generation, and async errors keep their
+`FMError` variant and metadata.
 
 > **Tier 2 note:** `LanguageModelSession.streamResponse(to:)` is an `AsyncSequence`
 > (multi-fire stream). It is deferred to Tier 2. Use `LanguageModelSession::stream`
@@ -127,6 +133,10 @@ println!("{reply}");
 # Ok(())
 # }
 ```
+
+Tool handlers run on a dispatch queue rather than on Swift's cooperative
+thread pool, so a handler may block or call a synchronous `respond`. The Swift
+session owns its tools and keeps them alive for as long as it can call them.
 
 ## Structured generation
 
@@ -196,6 +206,7 @@ cargo run --example 07_schema_surface --features macos_26_0
 
 - Swift-only compile-time macros such as `@Generable` and `@Guide` are exposed as Rust runtime traits/builders (`Generable`, `GenerationGuide`, `DynamicGenerationSchema`).
 - The optional `backgroundassets` feature is deprecated. It only re-exports the sibling `backgroundassets` crate, and its one SDK link, `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)`, was deprecated in macOS 26.4 and removed in 27.0. Depend on `backgroundassets` directly.
+- Text streams deliver `StreamEvent::Chunk` deltas cut from the full snapshot on UTF-8 boundaries, so concatenating them reproduces the reply even when a grapheme cluster grows across snapshots (ZWJ emoji, skin tones, combining marks). If the model rewrites text it already streamed, `StreamEvent::Replace` carries the whole new text.
 - `GenerationID` now round-trips as `GenerationId` via `GeneratedContent::generation_id_handle()`; `GeneratedContent::generation_id()` remains as a best-effort string helper.
 - Typed generation/schema/adapter error metadata plus refusal helpers are available through `FMError::{generation_error_context, adapter_asset_error_context, schema_error_context, recovery_suggestion, failure_reason, refusal, tool_call_error}`.
 - Xcode 26.5's `FoundationModels.swiftinterface` does **not** expose standalone `PromptTag`, `Conversation`, `ToolCallingMode`, `SystemPrompt`, `Examples`, `LanguageModelInputContent`, `LanguageModelOutputContent`, or `Streaming` symbols; see [`COVERAGE.md`](COVERAGE.md) for the audited matrix.

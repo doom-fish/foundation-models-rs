@@ -1,10 +1,12 @@
 # foundation-models coverage audit (vs MacOSX26.5.sdk)
 
-SDK_PUBLIC_SYMBOLS: 381
-VERIFIED: 267
+SDK_PUBLIC_SYMBOLS: 386
+VERIFIED: 272
 GAPS: 0
 EXEMPT: 114
 COVERAGE_PCT: 100%
+
+Earlier revisions of this audit missed `SystemLanguageModel.contextSize` and the instructions, tools, schema and transcript overloads of `tokenCount(for:)`, so their 100% figure was overstated. Those five symbols are now counted and wrapped. The audit covers the macOS 26.5 SDK only; the macOS 27.0 additions (`PrivateCloudComputeLanguageModel`, `LanguageModelError`, `ImageAttachment`, `ReasoningLevel`, `LanguageModelExecutor`, `ToolCallingMode`) are not wrapped.
 
 Methodology: counted non-macro public class/struct/enum/protocol/func/var/typealias declarations plus public initializers from `FoundationModels.swiftinterface`; initializers are included because they are user-facing constructors. Excluded the framework's 4 public macros from the totals because the audit brief scoped counting to those declaration kinds.
 
@@ -152,6 +154,11 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `SystemLanguageModel.supportedLanguages` | Var | `FoundationModels.swiftinterface:L638` | `SystemLanguageModel::{availability, is_available, default_model, with_use_case, with_adapter, supported_languages, supports_locale}` |
 | `SystemLanguageModel.supportsLocale(_ locale: Foundation.Locale = Locale.current)` | Func | `FoundationModels.swiftinterface:L641` | `SystemLanguageModel::{availability, is_available, default_model, with_use_case, with_adapter, supported_languages, supports_locale}` |
 | `SystemLanguageModel.tokenCount(for prompt: some PromptRepresentable)` | Func | `FoundationModels.swiftinterface:L599` | `SystemLanguageModel::token_count / ConfiguredSystemLanguageModel::token_count` |
+| `SystemLanguageModel.tokenCount(for instructions: FoundationModels.Instructions)` | Func | `FoundationModels.swiftinterface:L605` | `ConfiguredSystemLanguageModel::token_count_for_instructions` |
+| `SystemLanguageModel.tokenCount(for tools: [any FoundationModels.Tool])` | Func | `FoundationModels.swiftinterface:L611` | `ConfiguredSystemLanguageModel::token_count_for_tools` |
+| `SystemLanguageModel.tokenCount(for schema: FoundationModels.GenerationSchema)` | Func | `FoundationModels.swiftinterface:L617` | `ConfiguredSystemLanguageModel::token_count_for_schema` |
+| `SystemLanguageModel.tokenCount(for transcriptEntries: some Collection<Transcript.Entry>)` | Func | `FoundationModels.swiftinterface:L623` | `ConfiguredSystemLanguageModel::token_count_for_transcript` |
+| `SystemLanguageModel.contextSize` | Var | `FoundationModels.swiftinterface:L634` | `SystemLanguageModel::context_size / ConfiguredSystemLanguageModel::context_size` |
 | `SystemLanguageModel.Adapter` | Struct | `FoundationModels.swiftinterface:L655` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` plus `async_api::AsyncAdapter::{from_name, compatibility, compile}` |
 | `SystemLanguageModel.Adapter.creatorDefinedMetadata` | Var | `FoundationModels.swiftinterface:L656` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` |
 | `SystemLanguageModel.Adapter.init(fileURL: Foundation.URL)` | Init | `FoundationModels.swiftinterface:L665` | `Adapter::{from_file, from_name, compile, compatible_adapter_identifiers, remove_obsolete_adapters, creator_defined_metadata[_json]}` |

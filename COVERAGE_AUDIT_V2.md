@@ -1,5 +1,7 @@
 # foundation-models coverage audit v2 (vs MacOSX26.2.sdk)
 
+Superseded by [`COVERAGE_AUDIT.md`](COVERAGE_AUDIT.md), which audits the macOS 26.5 SDK. This file is kept as a record of the 26.2 audit.
+
 SDK_PUBLIC_SYMBOLS: 378
 VERIFIED: 263
 GAPS: 0

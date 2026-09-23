@@ -11,7 +11,7 @@ Audited against:
 | SDK symbol / area | Status | Rust / bridge coverage | Notes |
 | --- | --- | --- | --- |
 | `LanguageModelSession` | ✅ implemented | `src/session/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/FoundationModels.swift`, `SessionExtras.swift` | Covers session construction, transcript restore/export, `respond`, structured generation, streaming, tool calling, feedback attachments, `prewarm(promptPrefix:)`, and `isResponding`. |
-| `SystemLanguageModel` | ✅ implemented | `src/model/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/ModelBridge.swift` | Covers availability, use cases, guardrails, configured handles, locale support, adapters, async `token_count`, and async adapter compilation. |
+| `SystemLanguageModel` | ✅ implemented | `src/model/mod.rs`, `swift-bridge/Sources/FoundationModelsBridge/ModelBridge.swift` | Covers availability, use cases, guardrails, configured handles, locale support, adapters, `contextSize`, async `tokenCount(for:)` for prompts, instructions, tools, schemas and transcripts (macOS 26.4+), and async adapter compilation. Guardrails are per model; the SDK has no session-level `guardrails:` parameter. |
 | `Tool` | ✅ implemented | `src/tool.rs`, `swift-bridge/Sources/FoundationModelsBridge/ToolsBridge.swift` | Rust exposes dynamic tools plus schema-inferred `Tool::generable`; Swift bridge materializes them as FoundationModels `Tool`s. |
 | `ToolCall` | ✅ implemented | `src/transcript.rs` | Covered as `foundation_models::ToolCall` / `Transcript::ToolCalls`. |
 | `Transcript` | ✅ implemented | `src/transcript.rs`, `swift-bridge/Sources/FoundationModelsBridge/BridgeJSON.swift` | Covers transcript round-tripping, typed entries, collection helpers, and session restoration. |
@@ -31,7 +31,7 @@ Audited against:
 | `ToolCallingMode` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
 | `SystemPrompt` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`; system prompting is represented by `Instructions`. |
 | `Examples` | ⏭️ skipped | n/a | No standalone public symbol in the macOS 26.5 `FoundationModels.swiftinterface`. |
-| `Streaming` | ✅ implemented | `src/session/mod.rs` | Covered by `stream`, `stream_prompt`, `stream_generated`, `StreamEvent`, and `StructuredStreamEvent`. The SDK does not expose a standalone `Streaming` type. |
+| `Streaming` | ✅ implemented | `src/session/mod.rs` | Covered by `stream`, `stream_prompt`, `stream_generated`, `StreamEvent`, and `StructuredStreamEvent`. The SDK does not expose a standalone `Streaming` type. Streaming is synchronous (callback based); there is no async stream API yet. |
 
 ## Additional audited SDK items
 
@@ -46,6 +46,10 @@ Audited against:
 | `BackgroundAssets` companion integration | ⚠️ deprecated re-export | There is no BackgroundAssets interop in this crate. The optional `backgroundassets` Cargo feature only re-exports the sibling crate, now as a deprecated module; depend on `backgroundassets` directly. The only SDK link, `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)`, was deprecated in 26.4, is internal in the 26.5 interface and is gone from 27.0. |
 | `SystemLanguageModel.Adapter.AssetError.Context / recoverySuggestion` | ✅ implemented | Exposed via `AdapterAssetErrorContext` and `FMError::{adapter_asset_error_context, recovery_suggestion}`. |
 | `GenerationID` | ✅ implemented | Exposed as `GenerationId`; `GeneratedContent::{generation_id_handle, with_generation_id}` preserve opaque IDs across the bridge. |
+
+## Not covered
+
+- The macOS 27.0 SDK additions: `PrivateCloudComputeLanguageModel`, `LanguageModelError` (which replaces the deprecated context-window error, so it maps to `FMError::Unknown` today), `ImageAttachment`, `ReasoningLevel`, `LanguageModelExecutor` and `ToolCallingMode`.
 
 ## Verification
 
