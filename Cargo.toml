@@ -9,7 +9,7 @@ description = "Safe Rust bindings for Apple's FoundationModels framework - on-de
 authors = ["Per Johansson <per@doom.fish>"]
 keywords = ["foundation-models", "llm", "macos", "ai", "apple-intelligence"]
 categories = ["api-bindings", "os::macos-apis"]
-rust-version = "1.76"
+rust-version = "1.82"
 readme = "README.md"
 build = "build.rs"
 include = [
@@ -42,7 +42,7 @@ default = []
 cargo-clippy = []
 
 # Async support (executor-agnostic, works with any async runtime)
-async = ["doom-fish-utils"]
+async = []
 backgroundassets = ["dep:backgroundassets"]
 
 # macOS version feature flags. FoundationModels was introduced in macOS 26.0.
@@ -53,8 +53,8 @@ macos_26_0 = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-backgroundassets = { version = ">=0.1, <0.2", optional = true }
-doom-fish-utils = { path = "../doom-fish-utils", version = ">=0.3, <0.4", optional = true }
+backgroundassets = { path = "../backgroundassets-rs", version = ">=0.4, <0.5", optional = true }
+doom-fish-utils = { path = "../doom-fish-utils", version = ">=0.4.1, <0.5" }
 
 [dev-dependencies]
 regex-lite = "0.1"
