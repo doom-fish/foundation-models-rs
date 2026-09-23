@@ -1,5 +1,65 @@
 # Changelog
 
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.12.0] - Unreleased
+
+### Security
+
+- Tool calls could dereference a freed registry: Swift's `RustTool` held a non-owning pointer to the Rust `ToolRegistry`, while detached Tasks kept the Swift session alive. `let f = AsyncSession::new(&s).respond(..)?; drop(s); f.await`, or a stream that returned early after a callback panic, let the model call a tool through freed memory. The Swift session now owns a reference to the registry and releases it in `deinit`.
+- A tool error message containing a NUL byte panicked inside `extern "C"` and aborted the process. NUL bytes are replaced with U+FFFD, and every callback body now runs under `doom_fish_utils::panic_safe`.
+- `Adapter::from_file` force-unwrapped `URL(string:)`, so a `file:` path that Foundation can't parse (for example `file://host:port/x`) crashed the host. It now returns an error.
+
+### Fixed
+
+- Error metadata (recovery suggestion, failure reason, refusal, tool-call error and the generation, schema and adapter contexts) lived in a global map keyed by the message's heap address. Entries were never removed, and a reused address made an unrelated error report another request's metadata. The metadata now travels inside the error value.
+- Nothing could be cancelled. Dropping a future, or a sync stream that stops early, now cancels its Swift Task, and the next request on the session waits for cancelled requests to finish instead of failing with `ConcurrentRequests`. A cancelled stream's Task also waits (up to 2 s) for FoundationModels to roll the transcript back, because a request issued before that rollback finishes traps inside the framework (seen on macOS 27.0). `FMError::Cancelled` is now reported.
+- Text deltas were computed on grapheme clusters. When a cluster grew across snapshots (ZWJ emoji, skin tones, VS16, combining marks) the whole reply was re-sent or scalars were dropped. Deltas are now byte-prefix differences of full snapshots, so concatenating chunks equals the final text.
+- Async errors all became `FMError::Unknown`, `AdapterInvalidName` or `AdapterCompatibleNotFound` strings. Async operations now keep the SDK's typed error and its metadata.
+- Tool handlers ran on Swift's cooperative thread pool, so a blocking handler or a nested sync `respond()` could starve it. They now run on a dispatch queue.
+- `SamplingMode::TopK(0)` and top-p thresholds outside `0.0..=1.0` reached the SDK; they are now rejected with `FMError::InvalidArgument`.
+- `LanguageModelSession::with_instructions` panicked with "FoundationModels is not available" when the instructions contained a NUL byte. Instructions now go through the JSON bridge, so NUL bytes are passed through.
+- `LanguageModelSession::log_feedback` discarded the feedback attachment data.
+- The refusal-explanation thunks read their C strings inside the detached Task; they now copy them first.
+- The Swift bridge declared macOS 13 although FoundationModels is linked strongly and the README requires macOS 26. It now deploys to macOS 26; the 26.4 APIs keep their runtime checks.
+- `cargo clippy -- -D warnings` failed on the current toolchain (`borrow_as_ptr`).
+- The explicit-nil schema test failed on macOS 27.0, whose schema encoding no longer marks explicitly-nil properties as required; the encoding checks now run on macOS 26 only.
+
+### Changed
+
+- **Breaking:** `FMError` variants carry an `ErrorMessage` (text plus metadata) instead of a `String`. It derefs to `str`, displays like the old string and converts from `String` and `&str`, so construct errors with `"...".into()` or `format!(...).into()`.
+- **Breaking:** `LanguageModelSession::log_feedback` returns `Result<Vec<u8>, FMError>` with the attachment data.
+- **Breaking:** `ffi`: `fm_session_create_ex` takes a release callback for the tool context, which Swift always consumes; the respond, stream, compile, refusal-explanation and async exports return a task handle to cancel with `fm_task_cancel` and release with `fm_object_release`; the async adapter exports use status-carrying callbacks (`FmObjectCallback`, `FmRespondCallback`).
+- `SystemLanguageModel::token_count` and `ConfiguredSystemLanguageModel::token_count` accept any `ToPrompt` (a `&str` still works).
+- Dropping a `LanguageModelSession` while a future is pending is supported; the future completes.
+- doom-fish-utils is a regular dependency with the requirement `>=0.4.1, <0.5`, the `backgroundassets` requirement is `>=0.4, <0.5`, and `rust-version` is 1.82.
+
+### Deprecated
+
+- The `backgroundassets` feature and its `foundation_models::backgroundassets` module. It only re-exports the sibling crate; its one SDK link, `Adapter.isCompatible(_ assetPack:)`, was deprecated in macOS 26.4 and removed in 27.0. Depend on `backgroundassets` directly.
+
+### Added
+
+- `SystemLanguageModel::context_size` and `ConfiguredSystemLanguageModel::context_size` (`contextSize`).
+- `ConfiguredSystemLanguageModel::{token_count_for_instructions, token_count_for_tools, token_count_for_schema, token_count_for_transcript}` for the remaining `tokenCount(for:)` overloads (macOS 26.4+).
+- `StreamEvent::Replace`, delivered when the model rewrites text it already streamed.
+- `ErrorMessage`, re-exported from the crate root and the prelude.
+- Regression tests for tool-registry ownership, NUL-safe tool errors, panicking callbacks, stream-state lifetimes, grapheme-cluster deltas, typed async errors, sampling validation, cancellation, and a future that outlives its session.
+
+### Removed
+
+- The unused legacy `ffi` exports `fm_session_create`, `fm_session_respond`, `fm_session_stream_response`, `fm_session_log_feedback` and `fm_system_model_token_count_prompt_async`, and the `FmAsyncCallback` type.
+- The stray `ctk_probe.swift` and the empty `FoundationModelsBridge.h` header.
+
+## [0.11.3] - 2026-06-06
+
+### Fixed
+
+- The streaming trampolines freed the stream state on the first event; it now stays alive until Swift's terminal callback.
+
 ## [0.11.2] - 2026-05-20
 
 - Phase 32 completeness + async sweep.
@@ -22,11 +82,6 @@
 ## [0.10.1] - 2026-05-19
 
 - Bump MSRV from 1.70 to 1.76 to match fleet baseline.
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.10.0]
 

@@ -28,7 +28,7 @@ Safe, idiomatic Rust bindings for Apple's [FoundationModels](https://developer.a
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.11.2", features = ["macos_26_0"] }
+foundation-models = { version = "0.12.0", features = ["macos_26_0"] }
 ```
 
 ## Async API
@@ -38,7 +38,7 @@ work with any async runtime (Tokio, async-std, smol, pollster, …):
 
 ```toml
 [dependencies]
-foundation-models = { version = "0.11.2", features = ["macos_26_0", "async"] }
+foundation-models = { version = "0.12.0", features = ["macos_26_0", "async"] }
 ```
 
 ```rust,no_run
