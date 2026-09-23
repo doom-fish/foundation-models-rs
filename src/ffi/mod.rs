@@ -25,13 +25,14 @@ pub type FmRespondCallback = unsafe extern "C" fn(
     status: i32,
 );
 
-/// 3-argument async callback used by the `async_api` thunks in `Async.swift`.
-///
-/// - `result`  Non-null on success; semantics are thunk-specific (opaque pointer or C string).
-/// - `error`   Non-null null-terminated UTF-8 error message on failure.
-/// - `ctx`     Opaque context pointer from `AsyncCompletion::create()`.
-pub type FmAsyncCallback =
-    unsafe extern "C" fn(result: *mut c_void, error: *const c_char, ctx: *mut c_void);
+pub type FmObjectCallback = unsafe extern "C" fn(
+    context: *mut c_void,
+    object: *mut c_void,
+    error: *mut c_char,
+    status: i32,
+);
+
+pub type FmReleaseCallback = unsafe extern "C" fn(context: *mut c_void);
 
 pub type FmStreamCallback =
     unsafe extern "C" fn(context: *mut c_void, chunk: *mut c_char, done: bool, status: i32);
@@ -49,6 +50,8 @@ extern "C" {
     pub fn fm_string_free(s: *mut c_char);
     pub fn fm_bytes_free(ptr: *mut c_void);
     pub fn fm_object_release(ptr: *mut c_void);
+    pub fn fm_object_retain(ptr: *mut c_void);
+    pub fn fm_task_cancel(task: *mut c_void);
 
     pub fn fm_system_model_is_available() -> bool;
     pub fn fm_system_model_availability_code() -> i32;
@@ -69,12 +72,13 @@ extern "C" {
         model: *mut c_void,
         locale_identifier: *const c_char,
     ) -> bool;
-    pub fn fm_system_model_token_count_prompt_async(
+    pub fn fm_system_model_token_count_json_async(
         model: *mut c_void,
-        prompt: *const c_char,
-        ctx: *mut c_void,
-        cb: FmAsyncCallback,
-    );
+        kind: i32,
+        input_json: *const c_char,
+        context: *mut c_void,
+        callback: FmRespondCallback,
+    ) -> *mut c_void;
 
     pub fn fm_adapter_create_from_file(
         file_path: *const c_char,
@@ -88,39 +92,28 @@ extern "C" {
         adapter: *mut c_void,
         context: *mut c_void,
         callback: FmRespondCallback,
-    );
+    ) -> *mut c_void;
     pub fn fm_adapter_compatible_identifiers_json(name: *const c_char) -> *mut c_char;
     pub fn fm_adapter_remove_obsolete(error_out: *mut *mut c_char) -> i32;
     pub fn fm_adapter_metadata_json(adapter: *mut c_void) -> *mut c_char;
 
-    pub fn fm_session_create(instructions: *const c_char) -> *mut c_void;
     pub fn fm_session_create_ex(
         model: *mut c_void,
         instructions_json: *const c_char,
         transcript_json: *const c_char,
         tools_json: *const c_char,
         tool_context: *mut c_void,
+        tool_context_release: Option<FmReleaseCallback>,
         tool_callback: Option<FmToolCallback>,
         error_out: *mut *mut c_char,
     ) -> *mut c_void;
 
-    pub fn fm_session_respond(
-        session: *mut c_void,
-        prompt: *const c_char,
-        temperature: f64,
-        max_tokens: i32,
-        sampling_mode: i32,
-        top_k: i32,
-        top_p: f64,
-        context: *mut c_void,
-        callback: FmRespondCallback,
-    );
     pub fn fm_session_respond_request_json(
         session: *mut c_void,
         request_json: *const c_char,
         context: *mut c_void,
         callback: FmRespondCallback,
-    );
+    ) -> *mut c_void;
 
     pub fn fm_session_respond_with_schema(
         session: *mut c_void,
@@ -134,25 +127,14 @@ extern "C" {
         top_p: f64,
         context: *mut c_void,
         callback: FmRespondCallback,
-    );
+    ) -> *mut c_void;
 
-    pub fn fm_session_stream_response(
-        session: *mut c_void,
-        prompt: *const c_char,
-        temperature: f64,
-        max_tokens: i32,
-        sampling_mode: i32,
-        top_k: i32,
-        top_p: f64,
-        context: *mut c_void,
-        callback: FmStreamCallback,
-    );
     pub fn fm_session_stream_request_json(
         session: *mut c_void,
         request_json: *const c_char,
         context: *mut c_void,
         callback: FmStreamCallback,
-    );
+    ) -> *mut c_void;
 
     pub fn fm_session_prewarm(session: *mut c_void);
     pub fn fm_session_prewarm_prompt_json(
@@ -162,11 +144,6 @@ extern "C" {
     ) -> i32;
     pub fn fm_session_is_responding(session: *mut c_void) -> bool;
     pub fn fm_session_transcript_json(session: *mut c_void) -> *mut c_char;
-    pub fn fm_session_log_feedback(
-        session: *mut c_void,
-        sentiment: i32,
-        description: *const c_char,
-    );
     pub fn fm_session_log_feedback_attachment_json(
         session: *mut c_void,
         request_json: *const c_char,
@@ -207,46 +184,50 @@ extern "C" {
         refusal_token: *const c_char,
         context: *mut c_void,
         callback: FmRespondCallback,
-    );
+    ) -> *mut c_void;
     pub fn fm_refusal_explanation_from_transcript_json(
         transcript_json: *const c_char,
         context: *mut c_void,
         callback: FmRespondCallback,
-    );
+    ) -> *mut c_void;
     pub fn fm_refusal_explanation_stream(
         refusal_token: *const c_char,
         context: *mut c_void,
         callback: FmStreamCallback,
-    );
+    ) -> *mut c_void;
     pub fn fm_refusal_explanation_stream_from_transcript_json(
         transcript_json: *const c_char,
         context: *mut c_void,
         callback: FmStreamCallback,
-    );
+    ) -> *mut c_void;
 
     // ── Async thunks (Async.swift) ─────────────────────────────────────────
 
     /// Async version of `Adapter(name:)`.
     ///
-    /// Calls `cb(retainedAdapterBoxPtr, nil, ctx)` on success or
-    /// `cb(nil, errorCStr, ctx)` on failure.
-    /// Free the result with `fm_object_release`; errors are stack-owned by the callback.
+    /// Calls `cb(ctx, retainedAdapterBoxPtr, NULL, FM_OK)` on success or
+    /// `cb(ctx, NULL, errorPayload, status)` on failure.
+    /// Free the adapter with `fm_object_release` and the error with `fm_string_free`.
     pub fn fm_adapter_create_from_name_async(
         name: *const c_char,
         ctx: *mut c_void,
-        cb: FmAsyncCallback,
-    );
+        cb: FmObjectCallback,
+    ) -> *mut c_void;
 
     /// Async version of `Adapter.compatibleAdapterIdentifiers(name:)`.
     ///
-    /// Calls `cb(strdupJsonPtr, nil, ctx)` on success where the pointer is a
-    /// heap-allocated UTF-8 JSON array.  Free it with `fm_string_free`.
-    /// On failure calls `cb(nil, errorCStr, ctx)`.
+    /// Calls `cb(ctx, jsonArray, NULL, FM_OK)` on success or
+    /// `cb(ctx, NULL, errorPayload, status)` on failure.
+    /// Free both strings with `fm_string_free`.
     pub fn fm_adapter_compatibility_async(
         name: *const c_char,
         ctx: *mut c_void,
-        cb: FmAsyncCallback,
-    );
+        cb: FmRespondCallback,
+    ) -> *mut c_void;
+}
+
+pub mod token_count_input {
+    pub const PROMPT: i32 = 0;
 }
 
 /// Status codes mirrored 1:1 from the `FM_*` constants in Swift.

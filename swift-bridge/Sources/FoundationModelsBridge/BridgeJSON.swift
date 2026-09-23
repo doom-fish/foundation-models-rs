@@ -72,7 +72,6 @@ struct BridgeStructuredResponse: Encodable {
 
 struct BridgeTextStreamSnapshot: Encodable {
     let kind: String = "text"
-    let delta: String
     let content: String
     let rawContent: BridgeGeneratedContent
 }
@@ -280,7 +279,27 @@ func buildInstructions(from bridge: BridgeInstructions) throws -> Instructions {
 }
 
 @available(macOS 26.0, *)
-func buildOptions(from bridge: BridgeGenerationOptions?) -> GenerationOptions {
+func validatedTopK(_ k: Int?) throws -> Int {
+    guard let k, k > 0 else {
+        throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
+            NSLocalizedDescriptionKey: "top-k sampling needs at least one candidate token"
+        ])
+    }
+    return k
+}
+
+@available(macOS 26.0, *)
+func validatedTopP(_ p: Double?) throws -> Double {
+    guard let p, (0.0...1.0).contains(p) else {
+        throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
+            NSLocalizedDescriptionKey: "top-p sampling needs a probability threshold between 0.0 and 1.0"
+        ])
+    }
+    return p
+}
+
+@available(macOS 26.0, *)
+func buildOptions(from bridge: BridgeGenerationOptions?) throws -> GenerationOptions {
     guard let bridge else {
         return GenerationOptions()
     }
@@ -292,10 +311,10 @@ func buildOptions(from bridge: BridgeGenerationOptions?) -> GenerationOptions {
     case "greedy":
         sampling = .greedy
     case "top_k":
-        sampling = .random(top: bridge.sampling?.topK ?? 1, seed: bridge.sampling?.seed)
+        sampling = .random(top: try validatedTopK(bridge.sampling?.topK), seed: bridge.sampling?.seed)
     case "top_p":
         sampling = .random(
-            probabilityThreshold: bridge.sampling?.topP ?? 1.0,
+            probabilityThreshold: try validatedTopP(bridge.sampling?.topP),
             seed: bridge.sampling?.seed
         )
     default:

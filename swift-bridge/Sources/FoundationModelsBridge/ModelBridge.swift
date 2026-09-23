@@ -182,38 +182,46 @@ public func fm_system_model_supports_locale(
     return false
 }
 
-@_cdecl("fm_system_model_token_count_prompt_async")
-public func fm_system_model_token_count_prompt_async(
+let FM_TOKEN_COUNT_PROMPT: Int32 = 0
+
+@_cdecl("fm_system_model_token_count_json_async")
+public func fm_system_model_token_count_json_async(
     _ modelPtr: UnsafeMutableRawPointer?,
-    _ prompt: UnsafePointer<CChar>,
-    _ ctx: UnsafeMutableRawPointer?,
-    _ cb: @convention(c) (
+    _ kind: Int32,
+    _ inputJSON: UnsafePointer<CChar>,
+    _ context: UnsafeMutableRawPointer?,
+    _ callback: @convention(c) (
         UnsafeMutableRawPointer?,
-        UnsafePointer<CChar>?,
-        UnsafeMutableRawPointer?
+        UnsafeMutablePointer<CChar>?,
+        UnsafeMutablePointer<CChar>?,
+        Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.4, *) {
         let model = systemModel(from: modelPtr)
-        let promptValue = Prompt(String(cString: prompt))
-        Task.detached {
+        let json = String(cString: inputJSON)
+        return startBridgeTask {
             do {
-                let count = try await model.tokenCount(for: promptValue)
-                if let dup = ffiString(String(count)) {
-                    cb(UnsafeMutableRawPointer(dup), nil, ctx)
-                } else {
-                    "Failed to allocate token-count result".withCString { cb(nil, $0, ctx) }
+                try Task.checkCancellation()
+                let count: Int
+                switch kind {
+                case FM_TOKEN_COUNT_PROMPT:
+                    count = try await model.tokenCount(for: buildPrompt(from: decodeBridge(json, as: BridgePrompt.self)))
+                default:
+                    callback(context, nil, ffiString("unknown token count input kind \(kind)"), FM_INVALID_ARGUMENT)
+                    return
                 }
+                callback(context, ffiString(String(count)), nil, FM_OK)
             } catch {
-                let (_, message) = mapError(error)
-                message.withCString { cb(nil, $0, ctx) }
+                let (code, message) = mapError(error)
+                callback(context, nil, ffiString(message), code)
             }
         }
-        return
     }
     #endif
-    "FoundationModels token count requires macOS 26.4 or newer".withCString { cb(nil, $0, ctx) }
+    callback(context, nil, ffiString("FoundationModels token count requires macOS 26.4 or newer"), FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_adapter_create_from_file")
@@ -225,7 +233,16 @@ public func fm_adapter_create_from_file(
     if #available(macOS 26.0, *) {
         do {
             let raw = String(cString: filePath)
-            let url = raw.hasPrefix("file:") ? URL(string: raw)! : URL(fileURLWithPath: raw)
+            let url: URL
+            if raw.hasPrefix("file:") {
+                guard let fileURL = URL(string: raw), fileURL.isFileURL else {
+                    writeErrorOut(errorOut, "adapter path `\(raw)` is not a valid file URL")
+                    return nil
+                }
+                url = fileURL
+            } else {
+                url = URL(fileURLWithPath: raw)
+            }
             let adapter = try SystemLanguageModel.Adapter(fileURL: url)
             return Unmanaged.passRetained(AdapterBox(adapter)).toOpaque()
         } catch {
@@ -268,12 +285,13 @@ public func fm_adapter_compile(
         UnsafeMutablePointer<CChar>?,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         let adapter = adapter(from: adapterPtr)
-        Task.detached {
+        return startBridgeTask {
             do {
+                try Task.checkCancellation()
                 try await adapter.compile()
                 callback(context, ffiString("ok"), nil, FM_OK)
             } catch {
@@ -281,10 +299,10 @@ public func fm_adapter_compile(
                 callback(context, nil, ffiString(message), code)
             }
         }
-        return
     }
     #endif
     callback(context, nil, ffiString("FoundationModels requires macOS 26.0 or newer"), FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_adapter_compatible_identifiers_json")

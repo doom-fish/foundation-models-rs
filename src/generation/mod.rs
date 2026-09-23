@@ -2,6 +2,7 @@
 
 use serde_json::{Map, Value};
 
+use crate::error::FMError;
 use crate::ffi;
 
 /// Strategy used when sampling the next token.
@@ -95,6 +96,21 @@ impl GenerationOptions {
         self.sampling_seed
     }
 
+    pub(crate) fn validate(self) -> Result<Self, FMError> {
+        match self.sampling {
+            SamplingMode::TopK(0) => Err(FMError::InvalidArgument(
+                "top-k sampling needs at least one candidate token".into(),
+            )),
+            SamplingMode::TopP(p) if !(0.0..=1.0).contains(&p) => Err(FMError::InvalidArgument(
+                format!(
+                    "top-p sampling needs a probability threshold between 0.0 and 1.0, got {p}"
+                )
+                .into(),
+            )),
+            _ => Ok(self),
+        }
+    }
+
     /// Lower into the C-compatible struct shared with Swift.
     pub(crate) fn to_ffi(self) -> ffi::FFIGenerationOptions {
         let (mode_code, top_k, top_p) = match self.sampling {
@@ -159,6 +175,47 @@ impl GenerationOptions {
                 .and_then(|tokens| u32::try_from(tokens).ok()),
             sampling,
             sampling_seed: map.get("randomSeed").and_then(Value::as_u64),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_rejects_empty_top_k_and_out_of_range_top_p() {
+        for mode in [
+            SamplingMode::TopK(0),
+            SamplingMode::TopP(-0.1),
+            SamplingMode::TopP(1.5),
+            SamplingMode::TopP(f64::NAN),
+            SamplingMode::TopP(f64::INFINITY),
+        ] {
+            let error = GenerationOptions::new()
+                .with_sampling(mode)
+                .validate()
+                .expect_err("invalid sampling mode must be rejected");
+            assert!(
+                matches!(error, FMError::InvalidArgument(_)),
+                "{mode:?}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_accepts_supported_sampling_modes() {
+        for mode in [
+            SamplingMode::Default,
+            SamplingMode::Greedy,
+            SamplingMode::TopK(1),
+            SamplingMode::TopK(u32::MAX),
+            SamplingMode::TopP(0.0),
+            SamplingMode::TopP(0.9),
+            SamplingMode::TopP(1.0),
+        ] {
+            let options = GenerationOptions::new().with_sampling(mode);
+            assert_eq!(options.validate(), Ok(options), "{mode:?}");
         }
     }
 }

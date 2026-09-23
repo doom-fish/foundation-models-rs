@@ -3,22 +3,24 @@
 use core::ffi::{c_char, c_void};
 use core::ptr;
 use std::ffi::CString;
-use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 
+use doom_fish_utils::panic_safe::{catch_user_panic, catch_user_panic_result};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::content::{BridgeGeneratedContent, GeneratedContent};
-use crate::error::FMError;
+use crate::error::{bridge_text_result, from_swift_message, take_bridge_string, FMError};
 use crate::ffi;
 use crate::generation::{GenerationOptions, SamplingMode};
 use crate::model::ConfiguredSystemLanguageModel;
 use crate::prompt::{Instructions, Prompt, ToInstructions, ToPrompt};
 use crate::schema::GenerationSchema;
-use crate::tool::{tool_callback_trampoline, Tool, ToolRegistry};
+use crate::task::SwiftTask;
+use crate::tool::{
+    release_tool_registry, tool_callback_trampoline, tool_specs_json, Tool, ToolRegistry,
+};
 use crate::transcript::Transcript;
 
 /// A stateful conversation with the on-device language model.
@@ -40,7 +42,6 @@ use crate::transcript::Transcript;
 /// ```
 pub struct LanguageModelSession {
     ptr: *mut c_void,
-    _tool_registry: Option<Arc<ToolRegistry>>,
 }
 
 // SAFETY: The underlying Swift LanguageModelSession is reference-counted via
@@ -77,31 +78,22 @@ impl LanguageModelSession {
     ///
     /// # Panics
     ///
-    /// Panics if `FoundationModels` is not available, or if `instructions`
-    /// contains an interior NUL byte.
+    /// Panics if `FoundationModels` is not available.
     #[must_use]
     pub fn with_instructions(instructions: &str) -> Self {
         Self::try_new(Some(instructions)).expect("FoundationModels is not available on this OS")
     }
 
     /// Fallible constructor. Returns `None` when `FoundationModels` is not
-    /// available (OS too old, model not enabled, etc.) or when `instructions`
-    /// contains an interior NUL byte.
+    /// available (OS too old, model not enabled, etc.).
     #[must_use]
     pub fn try_new(instructions: Option<&str>) -> Option<Self> {
-        let cstring = match instructions {
-            Some(s) => Some(CString::new(s).ok()?),
-            None => None,
+        let builder = Self::builder();
+        let builder = match instructions {
+            Some(instructions) => builder.instructions(instructions).ok()?,
+            None => builder,
         };
-        let ptr =
-            unsafe { ffi::fm_session_create(cstring.as_ref().map_or(ptr::null(), |s| s.as_ptr())) };
-        if ptr.is_null() {
-            return None;
-        }
-        Some(Self {
-            ptr,
-            _tool_registry: None,
-        })
+        builder.build().ok()
     }
 
     /// Send a prompt and block until the full response is available.
@@ -149,10 +141,25 @@ impl LanguageModelSession {
     /// Log feedback on the most recent response for diagnostic /
     /// fine-tuning purposes. `sentiment`:
     /// `1` positive, `0` neutral, `-1` negative.
-    pub fn log_feedback(&self, sentiment: i32, description: Option<&str>) {
-        let cstr = description.and_then(|s| CString::new(s).ok());
-        let p = cstr.as_ref().map_or(core::ptr::null(), |c| c.as_ptr());
-        unsafe { ffi::fm_session_log_feedback(self.ptr, sentiment, p) };
+    pub fn log_feedback(
+        &self,
+        sentiment: i32,
+        description: Option<&str>,
+    ) -> Result<Vec<u8>, FMError> {
+        let mut request = FeedbackAttachmentRequest::new();
+        request.sentiment = Some(match sentiment {
+            1 => FeedbackSentiment::Positive,
+            -1 => FeedbackSentiment::Negative,
+            _ => FeedbackSentiment::Neutral,
+        });
+        request.issues = description
+            .map(|explanation| FeedbackIssue {
+                category: FeedbackIssueCategory::Unhelpful,
+                explanation: Some(explanation.to_owned()),
+            })
+            .into_iter()
+            .collect();
+        self.log_feedback_attachment(request)
     }
 
     /// Prompt-engineered JSON-shape response.
@@ -258,12 +265,8 @@ impl LanguageModelSession {
             .map_err(|e| FMError::InvalidArgument(format!("prompt NUL byte: {e}").into()))?;
         let schema_c = CString::new(schema)
             .map_err(|e| FMError::InvalidArgument(format!("schema NUL byte: {e}").into()))?;
-        let opts = options.to_ffi();
-        let (tx, rx) = mpsc::channel();
-        let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
-        let context = Box::into_raw(tx_box).cast::<c_void>();
-
-        unsafe {
+        let opts = options.validate()?.to_ffi();
+        wait_for_bridge_text(|context, callback| unsafe {
             ffi::fm_session_respond_with_schema(
                 self.ptr,
                 prompt_c.as_ptr(),
@@ -275,14 +278,9 @@ impl LanguageModelSession {
                 opts.top_k,
                 opts.top_p,
                 context,
-                respond_trampoline,
-            );
-        }
-
-        rx.recv().map_err(|_| FMError::Unknown {
-            code: ffi::status::UNKNOWN,
-            message: "Swift bridge dropped the callback channel".into(),
-        })?
+                callback,
+            )
+        })
     }
 
     /// Stream the response as the model generates it. The callback is invoked
@@ -317,28 +315,12 @@ impl LanguageModelSession {
         F: FnMut(StreamEvent<'_>) + Send + 'static,
     {
         let payload = respond_request_json(&Prompt::from(prompt), options, None, true)?;
-
-        let (done_tx, done_rx) = mpsc::channel::<Result<(), FMError>>();
-        let state = Arc::new(StreamState {
-            on_chunk: Mutex::new(Box::new(on_chunk)),
-            done_tx: Mutex::new(Some(done_tx)),
-            finished: AtomicBool::new(false),
-        });
-        let context = Arc::into_raw(state).cast::<c_void>().cast_mut();
-
-        unsafe {
-            ffi::fm_session_stream_request_json(
-                self.ptr,
-                payload.as_ptr(),
-                context,
-                json_text_stream_trampoline,
-            )
-        };
-
-        done_rx.recv().map_err(|_| FMError::Unknown {
-            code: ffi::status::UNKNOWN,
-            message: "Swift bridge dropped the stream channel".into(),
-        })?
+        run_text_stream_with(
+            |context, callback| unsafe {
+                ffi::fm_session_stream_request_json(self.ptr, payload.as_ptr(), context, callback)
+            },
+            on_chunk,
+        )
     }
 }
 
@@ -435,14 +417,10 @@ impl LanguageModelSession {
     {
         let prompt = prompt.to_prompt()?;
         let payload = respond_request_json(&prompt, options, None, true)?;
-        let payload = request_response(self.ptr, &payload)?;
-        let response: BridgeTextResponse = serde_json::from_str(&payload)
-            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
-        Ok(SessionResponse {
-            content: response.content,
-            raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
-            transcript: Transcript::from_json_str(&response.transcript_json)?,
-        })
+        let payload = wait_for_bridge_text(|context, callback| unsafe {
+            ffi::fm_session_respond_request_json(self.ptr, payload.as_ptr(), context, callback)
+        })?;
+        decode_bridge_text_response(&payload)
     }
 
     /// Generate structured content using an explicit schema.
@@ -486,7 +464,9 @@ impl LanguageModelSession {
         let prompt = prompt.to_prompt()?;
         let payload =
             respond_request_json(&prompt, options, Some(schema), include_schema_in_prompt)?;
-        let payload = request_response(self.ptr, &payload)?;
+        let payload = wait_for_bridge_text(|context, callback| unsafe {
+            ffi::fm_session_respond_request_json(self.ptr, payload.as_ptr(), context, callback)
+        })?;
         let response: BridgeStructuredResponse = serde_json::from_str(&payload)
             .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
         Ok(SessionResponse {
@@ -566,23 +546,25 @@ impl LanguageModelSession {
             respond_request_json(&prompt, options, Some(schema), include_schema_in_prompt)?;
         let (done_tx, done_rx) = mpsc::channel::<Result<(), FMError>>();
         let state = Arc::new(StructuredStreamState {
-            on_event: Mutex::new(Box::new(on_event)),
-            done_tx: Mutex::new(Some(done_tx)),
-            finished: AtomicBool::new(false),
+            inner: Mutex::new(StructuredStreamInner {
+                on_event: Box::new(on_event),
+                done_tx: Some(done_tx),
+            }),
         });
-        let context = Arc::into_raw(state).cast::<c_void>().cast_mut();
-        unsafe {
+        let context = Arc::into_raw(state).cast_mut().cast::<c_void>();
+        let task = SwiftTask::from_raw(unsafe {
             ffi::fm_session_stream_request_json(
                 self.ptr,
                 payload.as_ptr(),
                 context,
                 structured_stream_trampoline,
             )
-        };
-        done_rx.recv().map_err(|_| FMError::Unknown {
-            code: ffi::status::UNKNOWN,
-            message: "Swift bridge dropped the structured stream channel".into(),
-        })?
+        });
+        let result = done_rx
+            .recv()
+            .unwrap_or_else(|_| Err(bridge_dropped("structured stream")));
+        drop(task);
+        result
     }
 
     /// Log a feedback attachment and return the raw bytes Apple produced.
@@ -701,15 +683,15 @@ impl<'a> SessionBuilder<'a> {
             .as_ref()
             .map(Transcript::to_json_string)
             .transpose()?;
-        let tool_registry = if self.tools.is_empty() {
+        let tools_json = if self.tools.is_empty() {
             None
         } else {
-            Some(Arc::new(ToolRegistry::new(self.tools)))
+            let registry = ToolRegistry::new(self.tools);
+            Some((
+                tool_specs_json(registry.tools.values())?,
+                Arc::new(registry),
+            ))
         };
-        let tools_json = tool_registry
-            .as_ref()
-            .map(|registry| registry.specs_json())
-            .transpose()?;
 
         let instructions_c = instructions_json
             .as_deref()
@@ -729,17 +711,20 @@ impl<'a> SessionBuilder<'a> {
                     format!("transcript JSON contains a NUL byte: {error}").into(),
                 )
             })?;
-        let tools_c = tools_json
-            .as_deref()
-            .map(CString::new)
-            .transpose()
-            .map_err(|error| {
-                FMError::InvalidArgument(format!("tool JSON contains a NUL byte: {error}").into())
-            })?;
+        let (tools_c, tool_registry) = match tools_json {
+            Some((json, registry)) => (
+                Some(CString::new(json).map_err(|error| {
+                    FMError::InvalidArgument(
+                        format!("tool JSON contains a NUL byte: {error}").into(),
+                    )
+                })?),
+                Some(registry),
+            ),
+            None => (None, None),
+        };
 
-        let tool_context = tool_registry.as_ref().map_or(ptr::null_mut(), |registry| {
-            Arc::as_ptr(registry).cast_mut().cast::<c_void>()
-        });
+        let has_tools = tool_registry.is_some();
+        let tool_context = tool_registry.map_or(ptr::null_mut(), ToolRegistry::into_swift_context);
         let mut error: *mut c_char = ptr::null_mut();
         let ptr = unsafe {
             ffi::fm_session_create_ex(
@@ -752,10 +737,9 @@ impl<'a> SessionBuilder<'a> {
                     .map_or(ptr::null(), |json| json.as_ptr()),
                 tools_c.as_ref().map_or(ptr::null(), |json| json.as_ptr()),
                 tool_context,
-                tool_registry
-                    .as_ref()
-                    .map(|_| tool_callback_trampoline as ffi::FmToolCallback),
-                &mut error,
+                has_tools.then_some(release_tool_registry as ffi::FmReleaseCallback),
+                has_tools.then_some(tool_callback_trampoline as ffi::FmToolCallback),
+                &raw mut error,
             )
         };
         if ptr.is_null() {
@@ -764,10 +748,7 @@ impl<'a> SessionBuilder<'a> {
                 error,
             ));
         }
-        Ok(LanguageModelSession {
-            ptr,
-            _tool_registry: tool_registry,
-        })
+        Ok(LanguageModelSession { ptr })
     }
 }
 
@@ -937,15 +918,16 @@ struct BridgeStructuredSnapshot {
 
 #[derive(Debug, Deserialize)]
 struct BridgeTextStreamSnapshot {
-    delta: String,
+    content: String,
 }
 
-fn respond_request_json(
+pub(crate) fn respond_request_json(
     prompt: &Prompt,
     options: GenerationOptions,
     schema: Option<&GenerationSchema>,
     include_schema_in_prompt: bool,
 ) -> Result<CString, FMError> {
+    let options = options.validate()?;
     let sampling = match options.sampling() {
         SamplingMode::Default => json!({ "mode": "default" }),
         SamplingMode::Greedy => json!({ "mode": "greedy" }),
@@ -981,19 +963,6 @@ fn respond_request_json(
     })
 }
 
-fn request_response(session: *mut c_void, payload: &CString) -> Result<String, FMError> {
-    let (tx, rx) = mpsc::channel();
-    let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
-    let context = Box::into_raw(tx_box).cast::<c_void>();
-    unsafe {
-        ffi::fm_session_respond_request_json(session, payload.as_ptr(), context, respond_trampoline)
-    };
-    rx.recv().map_err(|_| FMError::Unknown {
-        code: ffi::status::UNKNOWN,
-        message: "Swift bridge dropped the JSON response channel".into(),
-    })?
-}
-
 pub(crate) fn decode_bridge_text_response(
     payload: &str,
 ) -> Result<SessionResponse<String>, FMError> {
@@ -1006,38 +975,56 @@ pub(crate) fn decode_bridge_text_response(
     })
 }
 
+fn bridge_dropped(what: &str) -> FMError {
+    FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message: format!("Swift bridge dropped the {what} callback").into(),
+    }
+}
+
+fn callback_panicked() -> FMError {
+    FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message: "stream callback panicked".into(),
+    }
+}
+
+pub(crate) fn wait_for_bridge_text<F>(invoke: F) -> Result<String, FMError>
+where
+    F: FnOnce(*mut c_void, ffi::FmRespondCallback) -> *mut c_void,
+{
+    let (tx, rx) = mpsc::channel::<Result<String, FMError>>();
+    let context = Box::into_raw(Box::new(tx)).cast::<c_void>();
+    let _task = SwiftTask::from_raw(invoke(context, respond_trampoline));
+    rx.recv()
+        .unwrap_or_else(|_| Err(bridge_dropped("response")))
+}
+
 pub(crate) fn request_text_response_with<F>(invoke: F) -> Result<SessionResponse<String>, FMError>
 where
-    F: FnOnce(*mut c_void, ffi::FmRespondCallback),
+    F: FnOnce(*mut c_void, ffi::FmRespondCallback) -> *mut c_void,
 {
-    let (tx, rx) = mpsc::channel();
-    let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
-    let context = Box::into_raw(tx_box).cast::<c_void>();
-    invoke(context, respond_trampoline);
-    let payload = rx.recv().map_err(|_| FMError::Unknown {
-        code: ffi::status::UNKNOWN,
-        message: "Swift bridge dropped the JSON response channel".into(),
-    })??;
-    decode_bridge_text_response(&payload)
+    decode_bridge_text_response(&wait_for_bridge_text(invoke)?)
 }
 
 pub(crate) fn run_text_stream_with<F, C>(invoke: F, on_chunk: C) -> Result<(), FMError>
 where
-    F: FnOnce(*mut c_void, ffi::FmStreamCallback),
+    F: FnOnce(*mut c_void, ffi::FmStreamCallback) -> *mut c_void,
     C: FnMut(StreamEvent<'_>) + Send + 'static,
 {
     let (done_tx, done_rx) = mpsc::channel::<Result<(), FMError>>();
-    let state = Arc::new(StreamState {
-        on_chunk: Mutex::new(Box::new(on_chunk)),
-        done_tx: Mutex::new(Some(done_tx)),
-        finished: AtomicBool::new(false),
+    let state = Arc::new(TextStreamState {
+        inner: Mutex::new(TextStreamInner {
+            on_chunk: Box::new(on_chunk),
+            received: String::new(),
+            done_tx: Some(done_tx),
+        }),
     });
-    let context = Arc::into_raw(state).cast::<c_void>().cast_mut();
-    invoke(context, json_text_stream_trampoline);
-    done_rx.recv().map_err(|_| FMError::Unknown {
-        code: ffi::status::UNKNOWN,
-        message: "Swift bridge dropped the stream channel".into(),
-    })?
+    let context = Arc::into_raw(state).cast_mut().cast::<c_void>();
+    let _task = SwiftTask::from_raw(invoke(context, json_text_stream_trampoline));
+    done_rx
+        .recv()
+        .unwrap_or_else(|_| Err(bridge_dropped("stream")))
 }
 
 fn prompt_to_plain_text(prompt: &Prompt) -> Option<String> {
@@ -1077,8 +1064,10 @@ impl core::fmt::Debug for LanguageModelSession {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum StreamEvent<'a> {
-    /// Incremental text delta. Concatenate these to reconstruct the full reply.
+    /// Incremental text delta. Concatenate these, starting from the text of the
+    /// latest `Replace`, to reconstruct the full reply.
     Chunk(&'a str),
+    Replace(&'a str),
     /// Stream finished successfully.
     Done,
     /// Stream failed; the inner error describes why.
@@ -1088,318 +1077,513 @@ pub enum StreamEvent<'a> {
 // ---------- internal callback plumbing ----------
 
 // SAFETY: `context` is a `Box<mpsc::Sender<...>>` raw pointer created by
-// `request_response` / `request_text_response_with`. Swift calls this callback
-// exactly once, so there is no double-free risk. `response` and `error` are
-// C strings owned by the Swift bridge and only valid for this call.
+// `wait_for_bridge_text`. Swift calls this callback exactly once, so there is
+// no double-free risk. `response` and `error` are heap-allocated C strings
+// that this callback takes ownership of and frees.
 unsafe extern "C" fn respond_trampoline(
     context: *mut c_void,
     response: *mut c_char,
     error: *mut c_char,
     status: i32,
 ) {
-    let tx = Box::from_raw(context.cast::<mpsc::Sender<Result<String, FMError>>>());
-    let result = if status == ffi::status::OK && !response.is_null() {
-        let s = core::ffi::CStr::from_ptr(response)
-            .to_string_lossy()
-            .into_owned();
-        ffi::fm_string_free(response);
-        Ok(s)
-    } else {
-        Err(crate::error::from_swift(status, error))
-    };
+    let result = catch_user_panic_result("respond callback", || unsafe {
+        bridge_text_result(response, error, status)
+    })
+    .unwrap_or_else(|| Err(bridge_dropped("response")));
+    if context.is_null() {
+        return;
+    }
+    let tx = unsafe { Box::from_raw(context.cast::<mpsc::Sender<Result<String, FMError>>>()) };
     let _ = tx.send(result);
+}
+
+enum TextUpdate<'a> {
+    Unchanged,
+    Append(&'a str),
+    Replace(&'a str),
+}
+
+fn text_update<'a>(received: &str, snapshot: &'a str) -> TextUpdate<'a> {
+    match snapshot.strip_prefix(received) {
+        Some("") => TextUpdate::Unchanged,
+        Some(delta) => TextUpdate::Append(delta),
+        None => TextUpdate::Replace(snapshot),
+    }
 }
 
 type StreamCallback = Box<dyn FnMut(StreamEvent<'_>) + Send>;
 
-struct StreamState {
-    on_chunk: Mutex<StreamCallback>,
-    done_tx: Mutex<Option<mpsc::Sender<Result<(), FMError>>>>,
-    /// Set once the stream has been reported terminated to the waiter (via an
-    /// error, a callback panic, or a normal `Done`). After this, the user
-    /// callback is no longer invoked, but the `Arc` is **not** freed until
-    /// Swift sends its own terminal callback (`done == true` / `status != OK`),
-    /// because Swift keeps streaming and will call this trampoline again.
-    finished: AtomicBool,
+struct TextStreamState {
+    inner: Mutex<TextStreamInner>,
 }
 
-// SAFETY: `context` is a `Arc<StreamState>` raw pointer passed via
-// `Arc::into_raw`. We reconstruct it with `Arc::from_raw` on every call and
-// immediately `mem::forget` a clone so the count stays ≥ 1 until Swift's own
-// terminal call (`done == true` or `status != OK`). Non-terminal failures
-// (callback panic, decode error) must NOT free the `Arc`: Swift keeps
-// streaming and will call this trampoline again with the same `context`, so
-// freeing early would cause a use-after-free / double-free. Instead we mark
-// the stream `finished`, signal the waiter once, and let Swift's terminal call
-// perform the final free. `chunk` is a Swift-owned C string valid only for the
-// duration of this call.
+struct TextStreamInner {
+    on_chunk: StreamCallback,
+    received: String,
+    done_tx: Option<mpsc::Sender<Result<(), FMError>>>,
+}
+
+impl TextStreamInner {
+    fn emit(&mut self, event: StreamEvent<'_>) -> bool {
+        catch_user_panic_result("stream callback", || (self.on_chunk)(event)).is_some()
+    }
+
+    fn finish(&mut self, result: Result<(), FMError>) {
+        if let Some(done_tx) = self.done_tx.take() {
+            let _ = done_tx.send(result);
+        }
+    }
+
+    fn fail(&mut self, error: FMError) {
+        self.emit(StreamEvent::Error(error.clone()));
+        self.finish(Err(error));
+    }
+
+    fn deliver(&mut self, payload: Option<String>, done: bool, status: i32) {
+        if self.done_tx.is_none() {
+            return;
+        }
+        if status != ffi::status::OK {
+            self.fail(from_swift_message(status, payload.unwrap_or_default()));
+            return;
+        }
+        if let Some(payload) = payload {
+            let snapshot = match serde_json::from_str::<BridgeTextStreamSnapshot>(&payload) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    self.fail(FMError::DecodingFailure(error.to_string().into()));
+                    return;
+                }
+            };
+            let delivered = match text_update(&self.received, &snapshot.content) {
+                TextUpdate::Unchanged => true,
+                TextUpdate::Append(delta) => self.emit(StreamEvent::Chunk(delta)),
+                TextUpdate::Replace(text) => self.emit(StreamEvent::Replace(text)),
+            };
+            self.received = snapshot.content;
+            if !delivered {
+                self.finish(Err(callback_panicked()));
+                return;
+            }
+        }
+        if done {
+            self.emit(StreamEvent::Done);
+            self.finish(Ok(()));
+        }
+    }
+}
+
+// SAFETY: `context` is an `Arc<TextStreamState>` raw pointer passed via
+// `Arc::into_raw`. Swift sends exactly one terminal callback (`done == true`
+// or `status != OK`), and only that call releases the reference, so every
+// earlier call sees a live state. Once the waiter has been answered (normal
+// end, error, or callback panic) later calls are ignored until the terminal
+// one arrives. `chunk` is a heap-allocated C string this callback frees.
 unsafe extern "C" fn json_text_stream_trampoline(
     context: *mut c_void,
     chunk: *mut c_char,
     done: bool,
     status: i32,
 ) {
-    let state = Arc::from_raw(context.cast::<StreamState>());
-    let state_for_swift = state.clone();
-    core::mem::forget(state_for_swift);
-
-    let already_finished = state.finished.load(Ordering::Acquire);
-
-    let payload: Option<String> = if chunk.is_null() {
-        None
-    } else {
-        let value = core::ffi::CStr::from_ptr(chunk)
-            .to_string_lossy()
-            .into_owned();
-        ffi::fm_string_free(chunk);
-        Some(value)
-    };
-
-    if status != ffi::status::OK {
-        // Terminal error from Swift (`done` is implied true): safe to free.
-        if !already_finished {
-            let err = payload
-                .map(|message| {
-                    crate::error::from_swift(
-                        status,
-                        ffi::fm_string_dup(
-                            CString::new(message)
-                                .expect("stream errors must not contain NUL bytes")
-                                .as_ptr(),
-                        ),
-                    )
-                })
-                .unwrap_or_else(|| crate::error::from_swift(status, ptr::null_mut()));
-            {
-                let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-                // Catch panics so they don't unwind across the FFI boundary (UB).
-                let _ = catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Error(err.clone()))));
-            }
-            if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
-                let _ = tx.send(Err(err));
-            }
-        }
-        drop(Arc::from_raw(Arc::as_ptr(&state)));
-        drop(state);
+    let payload = unsafe { take_bridge_string(chunk) };
+    if context.is_null() {
         return;
     }
-
-    if !already_finished {
-        if let Some(payload) = payload {
-            match serde_json::from_str::<BridgeTextStreamSnapshot>(&payload) {
-                Ok(snapshot) if !snapshot.delta.is_empty() => {
-                    let chunk_panicked = {
-                        let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-                        // Catch panics so they don't unwind across the FFI boundary.
-                        catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Chunk(&snapshot.delta))))
-                            .is_err()
-                    };
-                    if chunk_panicked {
-                        // Non-terminal: mark finished and signal the waiter, but
-                        // leave the `Arc` alive for Swift's terminal call.
-                        state.finished.store(true, Ordering::Release);
-                        if let Some(tx) =
-                            state.done_tx.lock().expect("done_tx mutex poisoned").take()
-                        {
-                            let _ = tx.send(Err(FMError::Unknown {
-                                code: ffi::status::UNKNOWN,
-                                message: "stream callback panicked".into(),
-                            }));
-                        }
-                        drop(state);
-                        return;
-                    }
-                }
-                Ok(_) => {}
-                Err(error) => {
-                    // Non-terminal decode failure: same handling as a panic.
-                    let err = FMError::DecodingFailure(error.to_string().into());
-                    state.finished.store(true, Ordering::Release);
-                    {
-                        let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-                        let _ = catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Error(err.clone()))));
-                    }
-                    if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
-                        let _ = tx.send(Err(err));
-                    }
-                    drop(state);
-                    return;
-                }
-            }
-        }
+    let state = context.cast_const().cast::<TextStreamState>();
+    catch_user_panic("text stream callback", || {
+        unsafe { &*state }
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .deliver(payload, done, status);
+    });
+    if done || status != ffi::status::OK {
+        catch_user_panic("text stream release", || unsafe {
+            drop(Arc::from_raw(state))
+        });
     }
-
-    if done {
-        if !already_finished {
-            {
-                let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
-                let _ = catch_unwind(AssertUnwindSafe(|| cb(StreamEvent::Done)));
-            }
-            if let Some(tx) = state.done_tx.lock().expect("done_tx mutex poisoned").take() {
-                let _ = tx.send(Ok(()));
-            }
-        }
-        drop(Arc::from_raw(Arc::as_ptr(&state)));
-    }
-    drop(state);
 }
 
 type StructuredStreamCallback = Box<dyn FnMut(StructuredStreamEvent) + Send>;
 
 struct StructuredStreamState {
-    on_event: Mutex<StructuredStreamCallback>,
-    done_tx: Mutex<Option<mpsc::Sender<Result<(), FMError>>>>,
-    /// See [`StreamState::finished`].
-    finished: AtomicBool,
+    inner: Mutex<StructuredStreamInner>,
+}
+
+struct StructuredStreamInner {
+    on_event: StructuredStreamCallback,
+    done_tx: Option<mpsc::Sender<Result<(), FMError>>>,
+}
+
+impl StructuredStreamInner {
+    fn emit(&mut self, event: StructuredStreamEvent) -> bool {
+        catch_user_panic_result("structured stream callback", || (self.on_event)(event)).is_some()
+    }
+
+    fn finish(&mut self, result: Result<(), FMError>) {
+        if let Some(done_tx) = self.done_tx.take() {
+            let _ = done_tx.send(result);
+        }
+    }
+
+    fn fail(&mut self, error: FMError) {
+        self.emit(StructuredStreamEvent::Error(error.clone()));
+        self.finish(Err(error));
+    }
+
+    fn deliver(&mut self, payload: Option<String>, done: bool, status: i32) {
+        if self.done_tx.is_none() {
+            return;
+        }
+        if status != ffi::status::OK {
+            self.fail(from_swift_message(status, payload.unwrap_or_default()));
+            return;
+        }
+        if let Some(payload) = payload {
+            let snapshot = match serde_json::from_str::<BridgeStructuredSnapshot>(&payload) {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    self.fail(FMError::DecodingFailure(error.to_string().into()));
+                    return;
+                }
+            };
+            let event = StructuredStreamEvent::Snapshot(StructuredStreamSnapshot {
+                content_json: snapshot.content.json,
+                raw_content_json: snapshot.raw_content.json,
+                is_complete: snapshot.is_complete,
+            });
+            if !self.emit(event) {
+                self.finish(Err(callback_panicked()));
+                return;
+            }
+        }
+        if done {
+            self.emit(StructuredStreamEvent::Done);
+            self.finish(Ok(()));
+        }
+    }
 }
 
 // SAFETY: Same invariants as `json_text_stream_trampoline` above, but for
 // `StructuredStreamState`.
-#[allow(clippy::too_many_lines)]
 unsafe extern "C" fn structured_stream_trampoline(
     context: *mut c_void,
     chunk: *mut c_char,
     done: bool,
     status: i32,
 ) {
-    let state = Arc::from_raw(context.cast::<StructuredStreamState>());
-    let state_for_swift = state.clone();
-    core::mem::forget(state_for_swift);
-
-    let already_finished = state.finished.load(Ordering::Acquire);
-
-    let payload: Option<String> = if chunk.is_null() {
-        None
-    } else {
-        let value = core::ffi::CStr::from_ptr(chunk)
-            .to_string_lossy()
-            .into_owned();
-        ffi::fm_string_free(chunk);
-        Some(value)
-    };
-
-    if status != ffi::status::OK {
-        // Terminal error from Swift (`done` is implied true): safe to free.
-        if !already_finished {
-            let err = payload
-                .map(|message| {
-                    crate::error::from_swift(
-                        status,
-                        ffi::fm_string_dup(
-                            CString::new(message)
-                                .expect("stream errors must not contain NUL bytes")
-                                .as_ptr(),
-                        ),
-                    )
-                })
-                .unwrap_or_else(|| crate::error::from_swift(status, ptr::null_mut()));
-            {
-                let mut cb = state
-                    .on_event
-                    .lock()
-                    .expect("structured callback mutex poisoned");
-                // Catch panics so they don't unwind across the FFI boundary (UB).
-                let _ = catch_unwind(AssertUnwindSafe(|| {
-                    cb(StructuredStreamEvent::Error(err.clone()));
-                }));
-            }
-            if let Some(tx) = state
-                .done_tx
-                .lock()
-                .expect("structured done_tx mutex poisoned")
-                .take()
-            {
-                let _ = tx.send(Err(err));
-            }
-        }
-        drop(Arc::from_raw(Arc::as_ptr(&state)));
-        drop(state);
+    let payload = unsafe { take_bridge_string(chunk) };
+    if context.is_null() {
         return;
     }
+    let state = context.cast_const().cast::<StructuredStreamState>();
+    catch_user_panic("structured stream callback", || {
+        unsafe { &*state }
+            .inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .deliver(payload, done, status);
+    });
+    if done || status != ffi::status::OK {
+        catch_user_panic("structured stream release", || unsafe {
+            drop(Arc::from_raw(state));
+        });
+    }
+}
 
-    if !already_finished {
-        if let Some(payload) = payload {
-            let snapshot: BridgeStructuredSnapshot = match serde_json::from_str(&payload) {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    // Non-terminal decode failure: mark finished and signal the
-                    // waiter, but leave the `Arc` alive for Swift's terminal call.
-                    let err = FMError::DecodingFailure(error.to_string().into());
-                    state.finished.store(true, Ordering::Release);
-                    {
-                        let mut cb = state
-                            .on_event
-                            .lock()
-                            .expect("structured callback mutex poisoned");
-                        let _ = catch_unwind(AssertUnwindSafe(|| {
-                            cb(StructuredStreamEvent::Error(err.clone()));
-                        }));
-                    }
-                    if let Some(tx) = state
-                        .done_tx
-                        .lock()
-                        .expect("structured done_tx mutex poisoned")
-                        .take()
-                    {
-                        let _ = tx.send(Err(err));
-                    }
-                    drop(state);
-                    return;
-                }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{Duration, Instant};
+
+    use crate::tool::ToolOutput;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Seen {
+        Chunk(String),
+        Replace(String),
+        Done,
+        Error(i32),
+    }
+
+    fn bridge_string(value: &str) -> *mut c_char {
+        let value = CString::new(value).unwrap();
+        unsafe { ffi::fm_string_dup(value.as_ptr()) }
+    }
+
+    fn snapshot(content: &str) -> *mut c_char {
+        bridge_string(&json!({ "kind": "text", "content": content }).to_string())
+    }
+
+    fn text_stream(
+        panic_on_chunk: bool,
+    ) -> (
+        *mut c_void,
+        std::sync::Weak<TextStreamState>,
+        Arc<Mutex<Vec<Seen>>>,
+        mpsc::Receiver<Result<(), FMError>>,
+    ) {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let recorder = Arc::clone(&seen);
+        let (done_tx, done_rx) = mpsc::channel();
+        let state = Arc::new(TextStreamState {
+            inner: Mutex::new(TextStreamInner {
+                on_chunk: Box::new(move |event| {
+                    let event = match event {
+                        StreamEvent::Chunk(delta) => Seen::Chunk(delta.to_owned()),
+                        StreamEvent::Replace(text) => Seen::Replace(text.to_owned()),
+                        StreamEvent::Done => Seen::Done,
+                        StreamEvent::Error(error) => Seen::Error(error.code()),
+                    };
+                    let is_chunk = matches!(event, Seen::Chunk(_));
+                    recorder.lock().unwrap().push(event);
+                    assert!(
+                        !(panic_on_chunk && is_chunk),
+                        "callback panicked on purpose"
+                    );
+                }),
+                received: String::new(),
+                done_tx: Some(done_tx),
+            }),
+        });
+        let weak = Arc::downgrade(&state);
+        (Arc::into_raw(state).cast_mut().cast(), weak, seen, done_rx)
+    }
+
+    fn reassemble(events: &[Seen]) -> String {
+        let mut text = String::new();
+        for event in events {
+            match event {
+                Seen::Chunk(delta) => text.push_str(delta),
+                Seen::Replace(replacement) => replacement.clone_into(&mut text),
+                Seen::Done | Seen::Error(_) => {}
+            }
+        }
+        text
+    }
+
+    fn feed(snapshots: &[&str]) -> Vec<Seen> {
+        let (context, weak, seen, done_rx) = text_stream(false);
+        for content in snapshots {
+            unsafe {
+                json_text_stream_trampoline(context, snapshot(content), false, ffi::status::OK)
             };
-            let snapshot_event = StructuredStreamEvent::Snapshot(StructuredStreamSnapshot {
-                content_json: snapshot.content.json,
-                raw_content_json: snapshot.raw_content.json,
-                is_complete: snapshot.is_complete,
-            });
-            let snapshot_panicked = {
-                let mut cb = state
-                    .on_event
-                    .lock()
-                    .expect("structured callback mutex poisoned");
-                // Catch panics so they don't unwind across the FFI boundary.
-                catch_unwind(AssertUnwindSafe(|| cb(snapshot_event))).is_err()
-            };
-            if snapshot_panicked {
-                // Non-terminal: mark finished and signal the waiter, but leave
-                // the `Arc` alive for Swift's terminal call.
-                state.finished.store(true, Ordering::Release);
-                if let Some(tx) = state
-                    .done_tx
-                    .lock()
-                    .expect("structured done_tx mutex poisoned")
-                    .take()
-                {
-                    let _ = tx.send(Err(FMError::Unknown {
-                        code: ffi::status::UNKNOWN,
-                        message: "stream callback panicked".into(),
-                    }));
-                }
-                drop(state);
+        }
+        unsafe {
+            json_text_stream_trampoline(context, ptr::null_mut(), true, ffi::status::OK);
+        }
+        assert_eq!(done_rx.recv().unwrap(), Ok(()));
+        assert!(weak.upgrade().is_none());
+        let events = seen.lock().unwrap().clone();
+        assert_eq!(events.last(), Some(&Seen::Done));
+        assert_eq!(reassemble(&events), *snapshots.last().unwrap());
+        events
+    }
+
+    #[test]
+    fn deltas_split_growing_grapheme_clusters_on_scalar_boundaries() {
+        let family = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
+        let events = feed(&[
+            "Hi \u{1F468}",
+            "Hi \u{1F468}\u{200D}",
+            "Hi \u{1F468}\u{200D}\u{1F469}",
+            &format!("Hi {family}"),
+            &format!("Hi {family} and \u{1F44D}"),
+            &format!("Hi {family} and \u{1F44D}\u{1F3FD}"),
+            &format!("Hi {family} and \u{1F44D}\u{1F3FD} cafe"),
+            &format!("Hi {family} and \u{1F44D}\u{1F3FD} cafe\u{301}"),
+            &format!("Hi {family} and \u{1F44D}\u{1F3FD} cafe\u{301} \u{2764}"),
+            &format!("Hi {family} and \u{1F44D}\u{1F3FD} cafe\u{301} \u{2764}\u{FE0F}"),
+        ]);
+        assert!(events
+            .iter()
+            .all(|event| !matches!(event, Seen::Replace(_))));
+        assert!(events.contains(&Seen::Chunk("\u{200D}".into())));
+        assert!(events.contains(&Seen::Chunk("\u{1F3FD}".into())));
+        assert!(events.contains(&Seen::Chunk("\u{301}".into())));
+        assert!(events.contains(&Seen::Chunk("\u{FE0F}".into())));
+    }
+
+    #[test]
+    fn rewritten_snapshots_are_reported_as_replacements() {
+        let events = feed(&["The cat", "The cat", "The dog", "The dog sat"]);
+        assert_eq!(
+            events,
+            vec![
+                Seen::Chunk("The cat".into()),
+                Seen::Replace("The dog".into()),
+                Seen::Chunk(" sat".into()),
+                Seen::Done,
+            ]
+        );
+    }
+
+    #[test]
+    fn a_panicking_callback_finishes_the_stream_but_keeps_the_state_until_swift_is_done() {
+        let (context, weak, seen, done_rx) = text_stream(true);
+        unsafe { json_text_stream_trampoline(context, snapshot("first"), false, ffi::status::OK) };
+        assert_eq!(done_rx.recv().unwrap(), Err(callback_panicked()));
+
+        unsafe {
+            json_text_stream_trampoline(context, snapshot("first second"), false, ffi::status::OK)
+        };
+        assert!(weak.upgrade().is_some());
+
+        let cancelled = bridge_string(&json!({ "message": "generation cancelled" }).to_string());
+        unsafe { json_text_stream_trampoline(context, cancelled, true, ffi::status::CANCELLED) };
+        assert!(weak.upgrade().is_none());
+        assert_eq!(*seen.lock().unwrap(), vec![Seen::Chunk("first".into())]);
+    }
+
+    #[test]
+    fn stream_errors_are_typed_and_delivered_once() {
+        let (context, weak, seen, done_rx) = text_stream(false);
+        let payload = bridge_string(&json!({ "message": "blocked" }).to_string());
+        unsafe {
+            json_text_stream_trampoline(context, payload, true, ffi::status::GUARDRAIL_VIOLATION)
+        };
+        assert!(
+            matches!(done_rx.recv().unwrap(), Err(FMError::GuardrailViolation(message)) if message == "blocked")
+        );
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            *seen.lock().unwrap(),
+            vec![Seen::Error(ffi::status::GUARDRAIL_VIOLATION)]
+        );
+    }
+
+    #[test]
+    fn undecodable_snapshots_fail_the_stream_without_freeing_it() {
+        let (context, weak, _seen, done_rx) = text_stream(false);
+        unsafe {
+            json_text_stream_trampoline(context, bridge_string("not json"), false, ffi::status::OK)
+        };
+        assert!(matches!(
+            done_rx.recv().unwrap(),
+            Err(FMError::DecodingFailure(_))
+        ));
+        assert!(weak.upgrade().is_some());
+        unsafe { json_text_stream_trampoline(context, ptr::null_mut(), true, ffi::status::OK) };
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn structured_stream_state_is_released_only_by_the_terminal_callback() {
+        let (done_tx, done_rx) = mpsc::channel();
+        let snapshots = Arc::new(Mutex::new(0_usize));
+        let counter = Arc::clone(&snapshots);
+        let state = Arc::new(StructuredStreamState {
+            inner: Mutex::new(StructuredStreamInner {
+                on_event: Box::new(move |event| {
+                    if let StructuredStreamEvent::Snapshot(snapshot) = event {
+                        *counter.lock().unwrap() += 1;
+                        assert!(snapshot.is_complete, "callback panicked on purpose");
+                    }
+                }),
+                done_tx: Some(done_tx),
+            }),
+        });
+        let weak = Arc::downgrade(&state);
+        let context = Arc::into_raw(state).cast_mut().cast::<c_void>();
+        let partial = json!({
+            "kind": "generated_content",
+            "content": { "json": "{}" },
+            "rawContent": { "json": "{}" },
+            "isComplete": false,
+        });
+        unsafe {
+            structured_stream_trampoline(
+                context,
+                bridge_string(&partial.to_string()),
+                false,
+                ffi::status::OK,
+            );
+        }
+        assert_eq!(done_rx.recv().unwrap(), Err(callback_panicked()));
+        unsafe {
+            structured_stream_trampoline(
+                context,
+                bridge_string(&partial.to_string()),
+                false,
+                ffi::status::OK,
+            );
+        }
+        assert!(weak.upgrade().is_some());
+        unsafe { structured_stream_trampoline(context, ptr::null_mut(), true, ffi::status::OK) };
+        assert!(weak.upgrade().is_none());
+        assert_eq!(*snapshots.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn respond_requests_reject_invalid_sampling_before_calling_swift() {
+        let error = respond_request_json(
+            &Prompt::from("hello"),
+            GenerationOptions::new().with_sampling(SamplingMode::TopK(0)),
+            None,
+            true,
+        )
+        .expect_err("top-k 0 must be rejected");
+        assert!(matches!(error, FMError::InvalidArgument(_)));
+    }
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn the_swift_session_owns_the_tool_registry() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let flag = DropFlag(Arc::clone(&dropped));
+        let tool = Tool::new(
+            "probe",
+            "Report that the registry is alive.",
+            GenerationSchema::generated_content(),
+            move |_| {
+                let _ = &flag;
+                Ok(ToolOutput::text("alive"))
+            },
+        );
+        let session = match LanguageModelSession::builder().tool(tool).build() {
+            Ok(session) => session,
+            Err(error) => {
+                eprintln!("SKIP: cannot create a session here: {error}");
                 return;
             }
+        };
+        let swift_session = session.ptr;
+        unsafe { ffi::fm_object_retain(swift_session) };
+        drop(session);
+        assert!(
+            !dropped.load(Ordering::SeqCst),
+            "the registry must outlive the Rust session while Swift holds the session"
+        );
+
+        unsafe { ffi::fm_object_release(swift_session) };
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !dropped.load(Ordering::SeqCst) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
         }
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "releasing the last Swift reference must free the registry"
+        );
     }
 
-    if done {
-        if !already_finished {
-            {
-                let mut cb = state
-                    .on_event
-                    .lock()
-                    .expect("structured callback mutex poisoned");
-                let _ = catch_unwind(AssertUnwindSafe(|| cb(StructuredStreamEvent::Done)));
-            }
-            if let Some(tx) = state
-                .done_tx
-                .lock()
-                .expect("structured done_tx mutex poisoned")
-                .take()
-            {
-                let _ = tx.send(Ok(()));
-            }
+    #[test]
+    fn instructions_with_nul_bytes_build_a_session() {
+        let result = LanguageModelSession::builder()
+            .instructions("Answer\0briefly")
+            .and_then(SessionBuilder::build);
+        if let Err(FMError::ModelUnavailable { .. }) = result {
+            eprintln!("SKIP: FoundationModels unavailable");
+            return;
         }
-        drop(Arc::from_raw(Arc::as_ptr(&state)));
+        assert!(result.is_ok(), "{result:?}");
+        assert!(LanguageModelSession::try_new(Some("Answer\0briefly")).is_some());
     }
-    drop(state);
 }

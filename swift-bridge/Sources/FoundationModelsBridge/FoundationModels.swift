@@ -138,29 +138,6 @@ public func fm_system_model_availability_code() -> Int32 {
 
 // MARK: - Session Lifecycle
 
-/// Create a session. `instructions` may be NULL for the default system prompt.
-/// Returns an opaque retained pointer; release with `fm_object_release`.
-/// On macOS < 26 returns NULL.
-@_cdecl("fm_session_create")
-public func fm_session_create(_ instructions: UnsafePointer<CChar>?) -> UnsafeMutableRawPointer? {
-    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
-    if #available(macOS 26.0, *) {
-        let session: LanguageModelSession
-        if let instructions = instructions {
-            let str = String(cString: instructions)
-            session = LanguageModelSession(instructions: Instructions(str))
-        } else {
-            session = LanguageModelSession()
-        }
-        return Unmanaged.passRetained(session).toOpaque()
-    } else {
-        return nil
-    }
-    #else
-    return nil
-    #endif
-}
-
 /// Pre-warm the model so the next call is faster. Apple loads the model
 /// weights + initialises the inference engine. Optionally accepts a
 /// short hint prompt to bias the cache. Returns immediately.
@@ -168,8 +145,7 @@ public func fm_session_create(_ instructions: UnsafePointer<CChar>?) -> UnsafeMu
 public func fm_session_prewarm(_ sessionPtr: UnsafeMutableRawPointer) {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
-        session.prewarm()
+        sessionBox(from: sessionPtr).session.prewarm()
     }
     #endif
 }
@@ -180,8 +156,7 @@ public func fm_session_prewarm(_ sessionPtr: UnsafeMutableRawPointer) {
 public func fm_session_is_responding(_ sessionPtr: UnsafeMutableRawPointer) -> Bool {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
-        return session.isResponding
+        return sessionBox(from: sessionPtr).session.isResponding
     }
     #endif
     return false
@@ -204,15 +179,15 @@ func buildOptions(
     topK: Int32,
     topP: Double,
     seed: UInt64? = nil
-) -> GenerationOptions {
+) throws -> GenerationOptions {
     var sampling: GenerationOptions.SamplingMode? = nil
     switch samplingMode {
     case 1:
         sampling = .greedy
-    case 2 where topK > 0:
-        sampling = .random(top: Int(topK), seed: seed)
-    case 3 where topP > 0:
-        sampling = .random(probabilityThreshold: topP, seed: seed)
+    case 2:
+        sampling = .random(top: try validatedTopK(Int(topK)), seed: seed)
+    case 3:
+        sampling = .random(probabilityThreshold: try validatedTopP(topP), seed: seed)
     default:
         sampling = nil
     }
@@ -225,130 +200,6 @@ func buildOptions(
     )
 }
 #endif
-
-// MARK: - Respond (single-shot)
-//
-// NB: @_cdecl can't accept Swift typealiases for C function pointers, so the
-// callback signature is inlined verbatim in the parameter list.
-
-@_cdecl("fm_session_respond")
-public func fm_session_respond(
-    _ sessionPtr: UnsafeMutableRawPointer,
-    _ prompt: UnsafePointer<CChar>,
-    _ temperature: Double,
-    _ maxTokens: Int32,
-    _ samplingMode: Int32,
-    _ topK: Int32,
-    _ topP: Double,
-    _ context: UnsafeMutableRawPointer?,
-    _ callback: @convention(c) (
-        UnsafeMutableRawPointer?,
-        UnsafeMutablePointer<CChar>?,
-        UnsafeMutablePointer<CChar>?,
-        Int32
-    ) -> Void
-) {
-    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
-    if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
-        let promptStr = String(cString: prompt)
-        let opts = buildOptions(
-            temperature: temperature,
-            maxTokens: maxTokens,
-            samplingMode: samplingMode,
-            topK: topK,
-            topP: topP
-        )
-        Task.detached {
-            do {
-                let response = try await session.respond(
-                    to: Prompt(promptStr),
-                    options: opts
-                )
-                let cstr = ffiString(response.content)
-                callback(context, cstr, nil, FM_OK)
-            } catch {
-                let (code, message) = mapError(error)
-                let cstr = ffiString(message)
-                callback(context, nil, cstr, code)
-            }
-        }
-        return
-    }
-    #endif
-    let cstr = ffiString("FoundationModels requires macOS 26.0 or newer")
-    callback(context, nil, cstr, FM_MODEL_UNAVAILABLE)
-}
-
-// MARK: - Stream Response (chunked)
-
-@_cdecl("fm_session_stream_response")
-public func fm_session_stream_response(
-    _ sessionPtr: UnsafeMutableRawPointer,
-    _ prompt: UnsafePointer<CChar>,
-    _ temperature: Double,
-    _ maxTokens: Int32,
-    _ samplingMode: Int32,
-    _ topK: Int32,
-    _ topP: Double,
-    _ context: UnsafeMutableRawPointer?,
-    _ callback: @convention(c) (
-        UnsafeMutableRawPointer?,
-        UnsafeMutablePointer<CChar>?,
-        Bool,
-        Int32
-    ) -> Void
-) {
-    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
-    if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
-        let promptStr = String(cString: prompt)
-        let opts = buildOptions(
-            temperature: temperature,
-            maxTokens: maxTokens,
-            samplingMode: samplingMode,
-            topK: topK,
-            topP: topP
-        )
-        Task.detached {
-            do {
-                let stream = session.streamResponse(
-                    to: Prompt(promptStr),
-                    options: opts
-                )
-                var lastEmitted = ""
-                for try await partial in stream {
-                    // partial is a Snapshot whose `content` is the
-                    // accumulated PartiallyGenerated value (a plain String
-                    // for the string-typed streamResponse overload).
-                    // Emit only the delta so Rust callers can print
-                    // without de-duplicating.
-                    let full = partial.content
-                    let delta: String
-                    if full.hasPrefix(lastEmitted) {
-                        delta = String(full.dropFirst(lastEmitted.count))
-                    } else {
-                        delta = full
-                    }
-                    lastEmitted = full
-                    if !delta.isEmpty {
-                        let cstr = ffiString(delta)
-                        callback(context, cstr, false, FM_OK)
-                    }
-                }
-                callback(context, nil, true, FM_OK)
-            } catch {
-                let (code, message) = mapError(error)
-                let cstr = ffiString(message)
-                callback(context, cstr, true, code)
-            }
-        }
-        return
-    }
-    #endif
-    let cstr = ffiString("FoundationModels requires macOS 26.0 or newer")
-    callback(context, cstr, true, FM_MODEL_UNAVAILABLE)
-}
 
 // MARK: - Error Mapping
 
@@ -410,9 +261,15 @@ func mapError(_ error: Error) -> (Int32, String) {
             return (FM_UNKNOWN, plainPayload(adapterError.localizedDescription))
         }
     }
+    if error is CancellationError {
+        return (FM_CANCELLED, plainPayload("generation cancelled"))
+    }
     let nsError = error as NSError
     if nsError.code == NSUserCancelledError {
         return (FM_CANCELLED, plainPayload(error.localizedDescription))
+    }
+    if nsError.domain == "fm-bridge" && nsError.code == Int(FM_INVALID_ARGUMENT) {
+        return (FM_INVALID_ARGUMENT, plainPayload(error.localizedDescription))
     }
     return (FM_UNKNOWN, plainPayload(error.localizedDescription))
 }
@@ -470,32 +327,33 @@ public func fm_session_respond_with_schema(
         UnsafeMutablePointer<CChar>?,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        let box = sessionBox(from: sessionPtr)
         let promptStr = String(cString: prompt)
         let schemaStr = String(cString: schemaJson)
-        let opts = buildOptions(
-            temperature: temperature,
-            maxTokens: maxTokens,
-            samplingMode: samplingMode,
-            topK: topK,
-            topP: topP
-        )
 
         guard let schemaData = schemaStr.data(using: .utf8),
               let schemaParsed = try? JSONSerialization.jsonObject(with: schemaData, options: []) else {
             let cstr = ffiString("schema JSON is not valid")
             callback(context, nil, cstr, FM_UNKNOWN)
-            return
+            return nil
         }
         do {
+            let opts = try buildOptions(
+                temperature: temperature,
+                maxTokens: maxTokens,
+                samplingMode: samplingMode,
+                topK: topK,
+                topP: topP
+            )
             let dyn = try buildDynamicSchema(from: schemaParsed, name: "Root")
             let schema = try GenerationSchema(root: dyn, dependencies: [])
-            Task.detached {
+            return startBridgeTask(gate: box.gate) {
                 do {
-                    let response = try await session.respond(
+                    try Task.checkCancellation()
+                    let response = try await box.session.respond(
                         to: Prompt(promptStr),
                         schema: schema,
                         includeSchemaInPrompt: includeSchemaInPrompt,
@@ -509,16 +367,16 @@ public func fm_session_respond_with_schema(
                     callback(context, nil, cstr, code)
                 }
             }
-            return
         } catch {
             let (code, message) = mapError(error)
             callback(context, nil, ffiString(message), code)
-            return
+            return nil
         }
     }
     #endif
     let cstr = ffiString("FoundationModels requires macOS 26.0 or newer")
     callback(context, nil, cstr, FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 // MARK: - Transcript export (v0.5)
@@ -529,9 +387,8 @@ public func fm_session_transcript_json(
 ) -> UnsafeMutablePointer<CChar>? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
         // Best-effort transcript -> JSON via JSONEncoder.
-        let transcript = session.transcript
+        let transcript = sessionBox(from: sessionPtr).session.transcript
         let encoder = JSONEncoder()
         if let data = try? encoder.encode(transcript),
            let s = String(data: data, encoding: .utf8) {
@@ -541,29 +398,4 @@ public func fm_session_transcript_json(
     }
     #endif
     return ffiString("{}")
-}
-
-@_cdecl("fm_session_log_feedback")
-public func fm_session_log_feedback(
-    _ sessionPtr: UnsafeMutableRawPointer,
-    _ sentiment: Int32,
-    _ description: UnsafePointer<CChar>?
-) {
-    #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
-    if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
-        let s: LanguageModelFeedback.Sentiment
-        switch sentiment {
-        case 1: s = .positive
-        case -1: s = .negative
-        default: s = .neutral
-        }
-        var issues: [LanguageModelFeedback.Issue] = []
-        if let p = description {
-            let str = String(cString: p)
-            issues.append(.init(category: .unhelpful, explanation: str))
-        }
-        _ = session.logFeedbackAttachment(sentiment: s, issues: issues, desiredOutput: nil)
-    }
-    #endif
 }

@@ -598,16 +598,34 @@ impl std::error::Error for FMError {}
 /// Takes ownership of `error_str` (a heap-allocated C string from the
 /// Swift bridge) and frees it via `fm_string_free` after copying.
 pub(crate) fn from_swift(status: i32, error_str: *mut c_char) -> FMError {
-    let raw_message = if error_str.is_null() {
-        String::new()
-    } else {
-        let value = unsafe { CStr::from_ptr(error_str) }
-            .to_string_lossy()
-            .into_owned();
-        unsafe { ffi::fm_string_free(error_str) };
-        value
-    };
-    from_swift_message(status, raw_message)
+    from_swift_message(
+        status,
+        unsafe { take_bridge_string(error_str) }.unwrap_or_default(),
+    )
+}
+
+pub(crate) unsafe fn take_bridge_string(ptr: *mut c_char) -> Option<String> {
+    if ptr.is_null() {
+        return None;
+    }
+    let value = unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned();
+    unsafe { ffi::fm_string_free(ptr) };
+    Some(value)
+}
+
+pub(crate) unsafe fn bridge_text_result(
+    response: *mut c_char,
+    error: *mut c_char,
+    status: i32,
+) -> Result<String, FMError> {
+    let response = unsafe { take_bridge_string(response) };
+    let error = unsafe { take_bridge_string(error) };
+    match (status, response) {
+        (ffi::status::OK, Some(response)) => Ok(response),
+        (status, _) => Err(from_swift_message(status, error.unwrap_or_default())),
+    }
 }
 
 pub(crate) fn from_swift_message(status: i32, raw_message: String) -> FMError {

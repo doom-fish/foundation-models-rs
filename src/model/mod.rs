@@ -5,15 +5,16 @@ use core::ffi::{c_char, c_void};
 use std::ffi::CString;
 use std::path::Path;
 use std::ptr;
-use std::sync::mpsc;
 
 use serde_json::Value;
 
 #[cfg(feature = "async")]
-use doom_fish_utils::completion::{error_from_cstr, AsyncCompletion};
-
+use crate::async_api::PendingText;
 use crate::error::{from_swift, FMError, Unavailability};
 use crate::ffi;
+#[cfg(feature = "async")]
+use crate::prompt::ToPrompt;
+use crate::session::wait_for_bridge_text;
 
 fn availability_from_code(code: i32) -> Availability {
     match code {
@@ -45,48 +46,32 @@ fn json_string(ptr: *mut c_char) -> String {
 }
 
 #[cfg(feature = "async")]
-async fn token_count_inner(model_ptr: usize, prompt: &str) -> Result<usize, FMError> {
-    let prompt = CString::new(prompt).map_err(|error| {
-        FMError::InvalidArgument(format!("prompt contains an interior NUL byte: {error}").into())
+fn start_token_count(
+    model: *mut c_void,
+    kind: i32,
+    input_json: String,
+) -> Result<PendingText, FMError> {
+    let input_json = CString::new(input_json).map_err(|error| {
+        FMError::InvalidArgument(format!("token count input contains a NUL byte: {error}").into())
     })?;
-    let (future, ctx) = AsyncCompletion::<String>::create();
-    unsafe {
-        ffi::fm_system_model_token_count_prompt_async(
-            model_ptr as *mut c_void,
-            prompt.as_ptr(),
-            ctx,
-            token_count_async_cb,
-        );
-    }
-    let value = future.await.map_err(|message| FMError::Unknown {
-        code: ffi::status::UNKNOWN,
-        message: message.into(),
-    })?;
-    value.parse::<usize>().map_err(|error| {
+    Ok(PendingText::start(|context, callback| unsafe {
+        ffi::fm_system_model_token_count_json_async(
+            model,
+            kind,
+            input_json.as_ptr(),
+            context,
+            callback,
+        )
+    }))
+}
+
+#[cfg(feature = "async")]
+async fn finish_token_count(pending: PendingText) -> Result<usize, FMError> {
+    pending.await?.parse::<usize>().map_err(|error| {
         FMError::DecodingFailure(
             format!("token count bridge returned invalid integer: {error}").into(),
         )
     })
-}
-
-#[cfg(feature = "async")]
-unsafe extern "C" fn token_count_async_cb(
-    result: *mut c_void,
-    error: *const c_char,
-    ctx: *mut c_void,
-) {
-    if !error.is_null() {
-        let message = unsafe { error_from_cstr(error) };
-        unsafe { AsyncCompletion::<String>::complete_err(ctx, message) };
-    } else if !result.is_null() {
-        let value = unsafe { core::ffi::CStr::from_ptr(result.cast::<c_char>()) }
-            .to_string_lossy()
-            .into_owned();
-        unsafe { ffi::fm_string_free(result.cast::<c_char>()) };
-        unsafe { AsyncCompletion::complete_ok(ctx, value) };
-    } else {
-        unsafe { AsyncCompletion::<String>::complete_err(ctx, "null token count result".into()) };
-    }
 }
 
 /// The on-device system language model namespace.
@@ -175,8 +160,13 @@ impl SystemLanguageModel {
     /// Returns an [`FMError`] if the prompt is invalid or the SDK rejects the request.
     #[cfg(feature = "async")]
     #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
-    pub async fn token_count(prompt: &str) -> Result<usize, FMError> {
-        token_count_inner(ptr::null_mut::<c_void>() as usize, prompt).await
+    pub async fn token_count(prompt: impl ToPrompt) -> Result<usize, FMError> {
+        let pending = start_token_count(
+            ptr::null_mut(),
+            ffi::token_count_input::PROMPT,
+            prompt.to_prompt()?.to_bridge_json()?,
+        )?;
+        finish_token_count(pending).await
     }
 }
 
@@ -221,9 +211,13 @@ impl ConfiguredSystemLanguageModel {
     #[cfg(feature = "async")]
     #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     #[allow(clippy::future_not_send)]
-    pub async fn token_count(&self, prompt: &str) -> Result<usize, FMError> {
-        let model_ptr = self.ptr as usize;
-        token_count_inner(model_ptr, prompt).await
+    pub async fn token_count(&self, prompt: impl ToPrompt) -> Result<usize, FMError> {
+        let pending = start_token_count(
+            self.ptr,
+            ffi::token_count_input::PROMPT,
+            prompt.to_prompt()?.to_bridge_json()?,
+        )?;
+        finish_token_count(pending).await
     }
 }
 
@@ -327,14 +321,10 @@ impl Adapter {
     ///
     /// Returns an [`FMError`] if compilation fails.
     pub fn compile(&self) -> Result<(), FMError> {
-        let (tx, rx) = mpsc::channel();
-        let tx_box: Box<mpsc::Sender<Result<(), FMError>>> = Box::new(tx);
-        let context = Box::into_raw(tx_box).cast::<c_void>();
-        unsafe { ffi::fm_adapter_compile(self.ptr, context, adapter_compile_trampoline) };
-        rx.recv().map_err(|_| FMError::Unknown {
-            code: ffi::status::UNKNOWN,
-            message: "Swift bridge dropped the adapter compile callback".into(),
-        })?
+        wait_for_bridge_text(|context, callback| unsafe {
+            ffi::fm_adapter_compile(self.ptr, context, callback)
+        })
+        .map(drop)
     }
 
     /// Creator-defined metadata as raw JSON.
@@ -387,28 +377,6 @@ impl core::fmt::Debug for Adapter {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Adapter").finish_non_exhaustive()
     }
-}
-
-// SAFETY: `context` is a `Box<mpsc::Sender<Result<(), FMError>>>` raw pointer
-// created by `Adapter::compile`. Swift calls this callback exactly once, so
-// there is no double-free risk. `response` and `error` are C strings owned
-// by the Swift bridge and only valid for this call.
-unsafe extern "C" fn adapter_compile_trampoline(
-    context: *mut c_void,
-    response: *mut c_char,
-    error: *mut c_char,
-    status: i32,
-) {
-    let tx = Box::from_raw(context.cast::<mpsc::Sender<Result<(), FMError>>>());
-    if !response.is_null() {
-        unsafe { ffi::fm_string_free(response) };
-    }
-    let result = if status == ffi::status::OK {
-        Ok(())
-    } else {
-        Err(from_swift(status, error))
-    };
-    let _ = tx.send(result);
 }
 
 /// Result of [`SystemLanguageModel::availability`].

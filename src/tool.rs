@@ -3,9 +3,9 @@
 use core::ffi::{c_char, c_void};
 use std::collections::HashMap;
 use std::ffi::{CStr, CString};
-use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+use doom_fish_utils::panic_safe::{catch_user_panic, catch_user_panic_result};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
@@ -16,7 +16,9 @@ use crate::prompt::{Prompt, ToPrompt, ToolDefinition};
 use crate::schema::{Generable, GenerationSchema};
 
 fn swift_dup_string(value: &str) -> *mut c_char {
-    let c_string = CString::new(value).expect("bridge strings must not contain interior NUL bytes");
+    let c_string = CString::new(value)
+        .or_else(|_| CString::new(value.replace('\0', "\u{FFFD}")))
+        .unwrap_or_default();
     unsafe { ffi::fm_string_dup(c_string.as_ptr()) }
 }
 
@@ -212,8 +214,27 @@ impl From<Prompt> for ToolOutput {
     }
 }
 
+pub(crate) fn tool_specs_json<'a>(
+    tools: impl IntoIterator<Item = &'a Tool>,
+) -> Result<String, FMError> {
+    let specs = tools
+        .into_iter()
+        .map(|tool| {
+            json!({
+                "name": tool.spec.name,
+                "description": tool.spec.description,
+                "parametersJSON": tool.spec.parameters.bridge_request_json(),
+                "includesSchemaInInstructions": tool.spec.includes_schema_in_instructions,
+            })
+        })
+        .collect::<Vec<_>>();
+    serde_json::to_string(&specs).map_err(|error| {
+        FMError::InvalidArgument(format!("tool specs are not JSON-serializable: {error}").into())
+    })
+}
+
 pub(crate) struct ToolRegistry {
-    tools: HashMap<String, Tool>,
+    pub(crate) tools: HashMap<String, Tool>,
 }
 
 impl ToolRegistry {
@@ -226,24 +247,8 @@ impl ToolRegistry {
         }
     }
 
-    pub(crate) fn specs_json(&self) -> Result<String, FMError> {
-        let specs = self
-            .tools
-            .values()
-            .map(|tool| {
-                json!({
-                    "name": tool.spec.name,
-                    "description": tool.spec.description,
-                    "parametersJSON": tool.spec.parameters.bridge_request_json(),
-                    "includesSchemaInInstructions": tool.spec.includes_schema_in_instructions,
-                })
-            })
-            .collect::<Vec<_>>();
-        serde_json::to_string(&specs).map_err(|error| {
-            FMError::InvalidArgument(
-                format!("tool specs are not JSON-serializable: {error}").into(),
-            )
-        })
+    pub(crate) fn into_swift_context(self: Arc<Self>) -> *mut c_void {
+        Arc::into_raw(self).cast_mut().cast()
     }
 
     fn invoke(&self, tool_name: &str, arguments: GeneratedContent) -> Result<ToolOutput, FMError> {
@@ -254,12 +259,19 @@ impl ToolRegistry {
     }
 }
 
-// SAFETY: `context` is a shared reference to a `ToolRegistry` whose lifetime
-// is managed by `LanguageModelSession` (via `Arc<ToolRegistry>`). The session
-// must outlive all Swift callbacks, which it does because the session object
-// owns the registry and is not dropped until after the response completes.
-// `tool_name` and `arguments_json` are non-null UTF-8 C strings owned by the
-// Swift bridge and valid for the duration of this call.
+pub(crate) unsafe extern "C" fn release_tool_registry(context: *mut c_void) {
+    if context.is_null() {
+        return;
+    }
+    catch_user_panic("tool registry release", || unsafe {
+        drop(Arc::from_raw(context.cast_const().cast::<ToolRegistry>()));
+    });
+}
+
+// SAFETY: `context` is the Swift-owned `Arc<ToolRegistry>` reference, which
+// the calling `RustTool` keeps alive for the duration of this call.
+// `tool_name` and `arguments_json` are NUL-terminated UTF-8 C strings owned by
+// the Swift bridge and valid for the duration of this call.
 pub(crate) unsafe extern "C" fn tool_callback_trampoline(
     context: *mut c_void,
     tool_name: *const c_char,
@@ -267,29 +279,177 @@ pub(crate) unsafe extern "C" fn tool_callback_trampoline(
     output_json_out: *mut *mut c_char,
     error_out: *mut *mut c_char,
 ) -> i32 {
-    let registry = &*(context.cast::<ToolRegistry>());
-    let result = catch_unwind(AssertUnwindSafe(|| {
-        let tool_name = CStr::from_ptr(tool_name).to_string_lossy().into_owned();
-        let arguments_json = CStr::from_ptr(arguments_json)
+    let outcome = catch_user_panic_result("tool callback", || {
+        if context.is_null() || tool_name.is_null() || arguments_json.is_null() {
+            return Err(FMError::ToolCallFailed(
+                "tool callback received a null argument".into(),
+            ));
+        }
+        let registry = unsafe { &*context.cast_const().cast::<ToolRegistry>() };
+        let tool_name = unsafe { CStr::from_ptr(tool_name) }.to_string_lossy();
+        let arguments_json = unsafe { CStr::from_ptr(arguments_json) }.to_string_lossy();
+        let arguments = GeneratedContent::from_json_str(&arguments_json)?;
+        registry.invoke(&tool_name, arguments)?.to_bridge_json()
+    });
+
+    let (status, output, message) = match outcome {
+        Some(Ok(output_json)) => (ffi::status::OK, Some(output_json), None),
+        Some(Err(error)) => (error.code(), None, Some(error.message().to_owned())),
+        None => (
+            ffi::status::TOOL_CALL_FAILED,
+            None,
+            Some("tool callback panicked".to_owned()),
+        ),
+    };
+    if let (Some(output), false) = (output, output_json_out.is_null()) {
+        unsafe { *output_json_out = swift_dup_string(&output) };
+    }
+    if let (Some(message), false) = (message, error_out.is_null()) {
+        unsafe { *error_out = swift_dup_string(&message) };
+    }
+    status
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::ptr;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    struct DropFlag(Arc<AtomicBool>);
+
+    impl Drop for DropFlag {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn registry_with(
+        handler: impl Fn(GeneratedContent) -> Result<ToolOutput, FMError> + Send + Sync + 'static,
+    ) -> Arc<ToolRegistry> {
+        Arc::new(ToolRegistry::new(vec![Tool::new(
+            "echo",
+            "Echo the input.",
+            GenerationSchema::generated_content(),
+            handler,
+        )]))
+    }
+
+    fn take(ptr: *mut c_char) -> Option<String> {
+        if ptr.is_null() {
+            return None;
+        }
+        let value = unsafe { CStr::from_ptr(ptr) }
             .to_string_lossy()
             .into_owned();
-        let arguments = GeneratedContent::from_json_str(&arguments_json)?;
-        let output = registry.invoke(&tool_name, arguments)?;
-        output.to_bridge_json()
-    }));
+        unsafe { ffi::fm_string_free(ptr) };
+        Some(value)
+    }
 
-    match result {
-        Ok(Ok(output_json)) => {
-            *output_json_out = swift_dup_string(&output_json);
-            ffi::status::OK
-        }
-        Ok(Err(error)) => {
-            *error_out = swift_dup_string(error.message());
-            error.code()
-        }
-        Err(_) => {
-            *error_out = swift_dup_string("tool callback panicked");
-            ffi::status::TOOL_CALL_FAILED
-        }
+    fn call(
+        registry: &Arc<ToolRegistry>,
+        name: &str,
+        arguments: &str,
+    ) -> (i32, Option<String>, Option<String>) {
+        let name = CString::new(name).unwrap();
+        let arguments = CString::new(arguments).unwrap();
+        let mut output: *mut c_char = ptr::null_mut();
+        let mut error: *mut c_char = ptr::null_mut();
+        let status = unsafe {
+            tool_callback_trampoline(
+                Arc::as_ptr(registry).cast_mut().cast(),
+                name.as_ptr(),
+                arguments.as_ptr(),
+                &raw mut output,
+                &raw mut error,
+            )
+        };
+        (status, take(output), take(error))
+    }
+
+    #[test]
+    fn swift_dup_string_replaces_interior_nul() {
+        assert_eq!(
+            take(swift_dup_string("a\0b")).as_deref(),
+            Some("a\u{FFFD}b")
+        );
+        assert_eq!(take(swift_dup_string("plain")).as_deref(), Some("plain"));
+    }
+
+    #[test]
+    fn tool_errors_with_nul_bytes_reach_swift_without_panicking() {
+        let registry = registry_with(|_| Err(FMError::ToolCallFailed("bad\0argument".into())));
+        let (status, output, error) = call(&registry, "echo", "{}");
+        assert_eq!(status, ffi::status::TOOL_CALL_FAILED);
+        assert_eq!(output, None);
+        assert_eq!(error.as_deref(), Some("bad\u{FFFD}argument"));
+    }
+
+    #[test]
+    fn panicking_tools_report_an_error() {
+        let registry = registry_with(|_| panic!("tool exploded"));
+        let (status, output, error) = call(&registry, "echo", "{}");
+        assert_eq!(status, ffi::status::TOOL_CALL_FAILED);
+        assert_eq!(output, None);
+        assert_eq!(error.as_deref(), Some("tool callback panicked"));
+    }
+
+    #[test]
+    fn unknown_tools_and_bad_arguments_fail_cleanly() {
+        let registry = registry_with(|_| Ok(ToolOutput::text("ok")));
+        let (status, _, error) = call(&registry, "missing", "{}");
+        assert_eq!(status, ffi::status::TOOL_CALL_FAILED);
+        assert!(error.unwrap().contains("not registered"));
+
+        let (status, output, _) = call(&registry, "echo", "not json");
+        assert_ne!(status, ffi::status::OK);
+        assert_eq!(output, None);
+
+        let (status, output, error) = call(&registry, "echo", "{}");
+        assert_eq!(status, ffi::status::OK);
+        assert!(output.unwrap().contains("ok"));
+        assert_eq!(error, None);
+    }
+
+    #[test]
+    fn null_arguments_are_rejected() {
+        let registry = registry_with(|_| Ok(ToolOutput::text("ok")));
+        let mut output: *mut c_char = ptr::null_mut();
+        let mut error: *mut c_char = ptr::null_mut();
+        let status = unsafe {
+            tool_callback_trampoline(
+                Arc::as_ptr(&registry).cast_mut().cast(),
+                ptr::null(),
+                ptr::null(),
+                &raw mut output,
+                &raw mut error,
+            )
+        };
+        assert_eq!(status, ffi::status::TOOL_CALL_FAILED);
+        assert!(output.is_null());
+        assert!(take(error).is_some());
+    }
+
+    #[test]
+    fn swift_owned_reference_keeps_the_registry_alive() {
+        let dropped = Arc::new(AtomicBool::new(false));
+        let flag = DropFlag(Arc::clone(&dropped));
+        let registry = registry_with(move |_| {
+            let _ = &flag;
+            Ok(ToolOutput::text("still alive"))
+        });
+        let context = Arc::clone(&registry).into_swift_context();
+        drop(registry);
+        assert!(!dropped.load(Ordering::SeqCst));
+
+        let registry = unsafe { &*context.cast_const().cast::<ToolRegistry>() };
+        let output = registry
+            .invoke("echo", GeneratedContent::from_json_str("{}").unwrap())
+            .unwrap();
+        assert_eq!(output.prompt(), &Prompt::text("still alive"));
+
+        unsafe { release_tool_registry(context) };
+        assert!(dropped.load(Ordering::SeqCst));
+        unsafe { release_tool_registry(ptr::null_mut()) };
     }
 }

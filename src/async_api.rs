@@ -42,22 +42,24 @@
 //! # }
 //! ```
 
-use std::ffi::{c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CString};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use doom_fish_utils::completion::{error_from_cstr, AsyncCompletion, AsyncCompletionFuture};
+use doom_fish_utils::completion::{AsyncCompletion, AsyncCompletionFuture};
+use doom_fish_utils::panic_safe::catch_user_panic_result;
 use serde::Deserialize;
 
 use crate::content::{BridgeGeneratedContent, GeneratedContent};
-use crate::error::FMError;
+use crate::error::{bridge_text_result, from_swift, FMError};
 use crate::ffi;
 use crate::generation::GenerationOptions;
 use crate::model::Adapter;
-use crate::prompt::{Prompt, ToPrompt};
+use crate::prompt::ToPrompt;
 use crate::schema::GenerationSchema;
-use crate::session::{decode_bridge_text_response, SessionResponse};
+use crate::session::{decode_bridge_text_response, respond_request_json, SessionResponse};
+use crate::task::SwiftTask;
 use crate::transcript::Transcript;
 
 // ============================================================================
@@ -89,128 +91,89 @@ struct OpaquePtr(*mut c_void);
 // SAFETY: See doc comment above.
 unsafe impl Send for OpaquePtr {}
 
-// ============================================================================
-// Callback: `FmRespondCallback` (4-arg) → AsyncCompletion<String>
-//
-// Reuses the existing `fm_session_respond_request_json` FFI which already
-// runs `try await session.respond(…)` inside a Swift Task.
-// ============================================================================
+impl OpaquePtr {
+    fn into_raw(self) -> *mut c_void {
+        let ptr = self.0;
+        core::mem::forget(self);
+        ptr
+    }
+}
 
-/// Async respond callback.  Matches `ffi::FmRespondCallback`.
-///
-/// On success copies the JSON response to an owned `String` and completes
-/// the `AsyncCompletion`.  On failure maps the status + error to an
-/// `FMError` message string (the Future newtypes re-map that to `FMError`).
-///
-/// # Safety
-///
-/// `ctx` must be a valid `AsyncCompletion<String>` context pointer.
-/// `response` and `error` are nullable C strings owned by the Swift bridge.
-unsafe extern "C" fn respond_async_cb(
+impl Drop for OpaquePtr {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            unsafe { ffi::fm_object_release(self.0) };
+        }
+    }
+}
+
+fn unknown_error(message: impl Into<String>) -> FMError {
+    FMError::Unknown {
+        code: ffi::status::UNKNOWN,
+        message: message.into().into(),
+    }
+}
+
+unsafe extern "C" fn text_async_cb(
     ctx: *mut c_void,
-    response: *mut std::ffi::c_char,
-    error: *mut std::ffi::c_char,
+    response: *mut c_char,
+    error: *mut c_char,
     status: i32,
 ) {
-    if status == ffi::status::OK && !response.is_null() {
-        let s = unsafe { CStr::from_ptr(response) }
-            .to_string_lossy()
-            .into_owned();
-        unsafe { ffi::fm_string_free(response) };
-        unsafe { AsyncCompletion::complete_ok(ctx, s) };
-    } else {
-        // Re-use the existing from_swift error mapper; convert FMError to String
-        // so we can store it in AsyncCompletion<String>.
-        let fm_err = crate::error::from_swift(status, error);
-        unsafe { AsyncCompletion::<String>::complete_err(ctx, fm_err.to_string()) };
-    }
+    let result = catch_user_panic_result("async response callback", || unsafe {
+        bridge_text_result(response, error, status)
+    })
+    .unwrap_or_else(|| Err(unknown_error("async response callback panicked")));
+    unsafe { AsyncCompletion::<Result<String, FMError>>::complete_ok(ctx, result) };
 }
 
-// ============================================================================
-// Callback: 3-arg async callback → AsyncCompletion<OpaquePtr>
-//
-// Used by fm_adapter_create_from_name_async.
-// ============================================================================
-
-/// # Safety
-///
-/// `ctx` must be a valid `AsyncCompletion<OpaquePtr>` context pointer.
-unsafe extern "C" fn adapter_init_async_cb(
-    result: *mut c_void,
-    error: *const std::ffi::c_char,
+unsafe extern "C" fn object_async_cb(
     ctx: *mut c_void,
-) {
-    if !error.is_null() {
-        let msg = unsafe { error_from_cstr(error) };
-        unsafe { AsyncCompletion::<OpaquePtr>::complete_err(ctx, msg) };
-    } else if !result.is_null() {
-        unsafe { AsyncCompletion::complete_ok(ctx, OpaquePtr(result)) };
-    } else {
-        unsafe { AsyncCompletion::<OpaquePtr>::complete_err(ctx, "null adapter pointer".into()) };
-    }
-}
-
-// ============================================================================
-// Callback: 3-arg async callback → AsyncCompletion<String>
-//
-// Used by fm_adapter_compatibility_async.  The result pointer is a strdup'd
-// JSON string; we copy it and free it.
-// ============================================================================
-
-/// # Safety
-///
-/// `ctx` must be a valid `AsyncCompletion<String>` context pointer.
-/// `result` (when non-null) must be a heap-allocated C string freed with
-/// `fm_string_free`.
-unsafe extern "C" fn adapter_compat_async_cb(
-    result: *mut c_void,
-    error: *const std::ffi::c_char,
-    ctx: *mut c_void,
-) {
-    if !error.is_null() {
-        let msg = unsafe { error_from_cstr(error) };
-        unsafe { AsyncCompletion::<String>::complete_err(ctx, msg) };
-    } else if !result.is_null() {
-        let s = unsafe { CStr::from_ptr(result.cast::<std::ffi::c_char>()) }
-            .to_string_lossy()
-            .into_owned();
-        // Free the strdup'd JSON string allocated by the Swift bridge.
-        unsafe { ffi::fm_string_free(result.cast::<std::ffi::c_char>()) };
-        unsafe { AsyncCompletion::complete_ok(ctx, s) };
-    } else {
-        unsafe { AsyncCompletion::<String>::complete_err(ctx, "null compatibility result".into()) };
-    }
-}
-
-/// # Safety
-///
-/// `ctx` must be a valid `AsyncCompletion<()>` context pointer.
-unsafe extern "C" fn adapter_compile_async_cb(
-    context: *mut c_void,
-    response: *mut std::ffi::c_char,
-    error: *mut std::ffi::c_char,
+    object: *mut c_void,
+    error: *mut c_char,
     status: i32,
 ) {
-    if !response.is_null() {
-        unsafe { ffi::fm_string_free(response) };
-    }
-
-    if status == ffi::status::OK {
+    let result = catch_user_panic_result("async object callback", || {
+        let object = OpaquePtr(object);
+        if status != ffi::status::OK {
+            return Err(from_swift(status, error));
+        }
         if !error.is_null() {
             unsafe { ffi::fm_string_free(error) };
         }
-        unsafe { AsyncCompletion::complete_ok(context, ()) };
-        return;
-    }
+        if object.0.is_null() {
+            return Err(unknown_error("Swift bridge returned a null object"));
+        }
+        Ok(object)
+    })
+    .unwrap_or_else(|| Err(unknown_error("async object callback panicked")));
+    unsafe { AsyncCompletion::<Result<OpaquePtr, FMError>>::complete_ok(ctx, result) };
+}
 
-    let message = if error.is_null() {
-        crate::error::from_swift(status, std::ptr::null_mut()).to_string()
-    } else {
-        let message = unsafe { CStr::from_ptr(error) }.to_string_lossy().into_owned();
-        unsafe { ffi::fm_string_free(error) };
-        message
-    };
-    unsafe { AsyncCompletion::<()>::complete_err(context, message) };
+pub(crate) struct PendingText {
+    inner: AsyncCompletionFuture<Result<String, FMError>>,
+    _task: Option<SwiftTask>,
+}
+
+impl PendingText {
+    pub(crate) fn start<F>(invoke: F) -> Self
+    where
+        F: FnOnce(*mut c_void, ffi::FmRespondCallback) -> *mut c_void,
+    {
+        let (inner, context) = AsyncCompletion::create();
+        let task = SwiftTask::from_raw(invoke(context, text_async_cb));
+        Self { inner, _task: task }
+    }
+}
+
+impl Future for PendingText {
+    type Output = Result<String, FMError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        Pin::new(&mut self.inner)
+            .poll(cx)
+            .map(|result| result.unwrap_or_else(|message| Err(unknown_error(message))))
+    }
 }
 
 // ============================================================================
@@ -221,7 +184,7 @@ unsafe extern "C" fn adapter_compile_async_cb(
 ///
 /// Resolves to `Result<SessionResponse<String>, FMError>`.
 pub struct RespondFuture {
-    inner: AsyncCompletionFuture<String>,
+    pending: PendingText,
 }
 
 impl std::fmt::Debug for RespondFuture {
@@ -234,13 +197,9 @@ impl Future for RespondFuture {
     type Output = Result<SessionResponse<String>, FMError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(|msg| FMError::Unknown {
-                code: ffi::status::UNKNOWN,
-                message: msg.into(),
-            })
-            .and_then(|json| decode_bridge_text_response(&json))
-        })
+        Pin::new(&mut self.pending)
+            .poll(cx)
+            .map(|result| result.and_then(|json| decode_bridge_text_response(&json)))
     }
 }
 
@@ -252,7 +211,7 @@ impl Future for RespondFuture {
 ///
 /// Resolves to `Result<SessionResponse<GeneratedContent>, FMError>`.
 pub struct RespondGeneratingFuture {
-    inner: AsyncCompletionFuture<String>,
+    pending: PendingText,
 }
 
 impl std::fmt::Debug for RespondGeneratingFuture {
@@ -266,19 +225,14 @@ impl Future for RespondGeneratingFuture {
     type Output = Result<SessionResponse<GeneratedContent>, FMError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(|msg| FMError::Unknown {
-                code: ffi::status::UNKNOWN,
-                message: msg.into(),
-            })
-            .and_then(|json| {
-                let response: AsyncBridgeStructuredResponse = serde_json::from_str(&json)
-                    .map_err(|e| FMError::DecodingFailure(e.to_string().into()))?;
-                Ok(SessionResponse {
-                    content: GeneratedContent::from_bridge_payload(response.content, true)?,
-                    raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
-                    transcript: Transcript::from_json_str(&response.transcript_json)?,
-                })
+        Pin::new(&mut self.pending).poll(cx).map(|result| {
+            let json = result?;
+            let response: AsyncBridgeStructuredResponse = serde_json::from_str(&json)
+                .map_err(|e| FMError::DecodingFailure(e.to_string().into()))?;
+            Ok(SessionResponse {
+                content: GeneratedContent::from_bridge_payload(response.content, true)?,
+                raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
+                transcript: Transcript::from_json_str(&response.transcript_json)?,
             })
         })
     }
@@ -292,7 +246,8 @@ impl Future for RespondGeneratingFuture {
 ///
 /// Resolves to `Result<Adapter, FMError>`.
 pub struct AdapterInitFuture {
-    inner: AsyncCompletionFuture<OpaquePtr>,
+    inner: AsyncCompletionFuture<Result<OpaquePtr, FMError>>,
+    _task: Option<SwiftTask>,
 }
 
 impl std::fmt::Debug for AdapterInitFuture {
@@ -305,9 +260,12 @@ impl Future for AdapterInitFuture {
     type Output = Result<Adapter, FMError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(|message| FMError::AdapterInvalidName(message.into()))
-                .map(|OpaquePtr(ptr)| Adapter { ptr })
+        Pin::new(&mut self.inner).poll(cx).map(|result| {
+            result
+                .unwrap_or_else(|message| Err(unknown_error(message)))
+                .map(|object| Adapter {
+                    ptr: object.into_raw(),
+                })
         })
     }
 }
@@ -320,7 +278,7 @@ impl Future for AdapterInitFuture {
 ///
 /// Resolves to `Result<Vec<String>, FMError>`.
 pub struct AdapterCompatibilityFuture {
-    inner: AsyncCompletionFuture<String>,
+    pending: PendingText,
 }
 
 impl std::fmt::Debug for AdapterCompatibilityFuture {
@@ -334,12 +292,9 @@ impl Future for AdapterCompatibilityFuture {
     type Output = Result<Vec<String>, FMError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(|message| FMError::AdapterCompatibleNotFound(message.into()))
-                .and_then(|json| {
-                    serde_json::from_str::<Vec<String>>(&json)
-                        .map_err(|e| FMError::DecodingFailure(e.to_string().into()))
-                })
+        Pin::new(&mut self.pending).poll(cx).map(|result| {
+            serde_json::from_str::<Vec<String>>(&result?)
+                .map_err(|e| FMError::DecodingFailure(e.to_string().into()))
         })
     }
 }
@@ -348,7 +303,7 @@ impl Future for AdapterCompatibilityFuture {
 ///
 /// Resolves to `Result<(), FMError>`.
 pub struct CompileAdapterFuture {
-    inner: AsyncCompletionFuture<()>,
+    pending: PendingText,
 }
 
 impl std::fmt::Debug for CompileAdapterFuture {
@@ -362,12 +317,9 @@ impl Future for CompileAdapterFuture {
     type Output = Result<(), FMError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(|message| FMError::Unknown {
-                code: ffi::status::UNKNOWN,
-                message: message.into(),
-            })
-        })
+        Pin::new(&mut self.pending)
+            .poll(cx)
+            .map(|result| result.map(drop))
     }
 }
 
@@ -377,8 +329,8 @@ impl Future for CompileAdapterFuture {
 
 /// Async wrapper around [`crate::LanguageModelSession`].
 ///
-/// Borrows the session for its lifetime; the session itself must outlive all
-/// in-flight futures.
+/// Futures own everything they need: dropping the session while a future is
+/// pending is allowed, and dropping a future cancels its generation.
 ///
 /// # Examples
 ///
@@ -407,6 +359,13 @@ impl<'s> AsyncSession<'s> {
         Self { session }
     }
 
+    fn start(&self, payload: &CString) -> PendingText {
+        let session = self.session.as_ptr();
+        PendingText::start(|context, callback| unsafe {
+            ffi::fm_session_respond_request_json(session, payload.as_ptr(), context, callback)
+        })
+    }
+
     /// Async version of `LanguageModelSession.respond(to:)`.
     ///
     /// Corresponds to the Swift `async throws` method
@@ -416,19 +375,7 @@ impl<'s> AsyncSession<'s> {
     ///
     /// Returns an [`FMError`] if the model is unavailable or generation fails.
     pub fn respond(&self, prompt: impl ToPrompt) -> Result<RespondFuture, FMError> {
-        let prompt = prompt.to_prompt()?;
-        let payload = build_text_request_json(&prompt, GenerationOptions::new())?;
-        let session_ptr = self.session.as_ptr();
-        let (future, ctx) = AsyncCompletion::create();
-        unsafe {
-            ffi::fm_session_respond_request_json(
-                session_ptr,
-                payload.as_ptr(),
-                ctx,
-                respond_async_cb,
-            );
-        }
-        Ok(RespondFuture { inner: future })
+        self.respond_with_options(prompt, GenerationOptions::new())
     }
 
     /// Async version of `LanguageModelSession.respond(to:)` with [`GenerationOptions`].
@@ -441,19 +388,10 @@ impl<'s> AsyncSession<'s> {
         prompt: impl ToPrompt,
         options: GenerationOptions,
     ) -> Result<RespondFuture, FMError> {
-        let prompt = prompt.to_prompt()?;
-        let payload = build_text_request_json(&prompt, options)?;
-        let session_ptr = self.session.as_ptr();
-        let (future, ctx) = AsyncCompletion::create();
-        unsafe {
-            ffi::fm_session_respond_request_json(
-                session_ptr,
-                payload.as_ptr(),
-                ctx,
-                respond_async_cb,
-            );
-        }
-        Ok(RespondFuture { inner: future })
+        let payload = respond_request_json(&prompt.to_prompt()?, options, None, true)?;
+        Ok(RespondFuture {
+            pending: self.start(&payload),
+        })
     }
 
     /// Async version of `LanguageModelSession.respond(to:generating:)`.
@@ -472,20 +410,15 @@ impl<'s> AsyncSession<'s> {
         include_schema_in_prompt: bool,
         options: GenerationOptions,
     ) -> Result<RespondGeneratingFuture, FMError> {
-        let prompt = prompt.to_prompt()?;
-        let payload =
-            build_structured_request_json(&prompt, options, schema, include_schema_in_prompt)?;
-        let session_ptr = self.session.as_ptr();
-        let (future, ctx) = AsyncCompletion::create();
-        unsafe {
-            ffi::fm_session_respond_request_json(
-                session_ptr,
-                payload.as_ptr(),
-                ctx,
-                respond_async_cb,
-            );
-        }
-        Ok(RespondGeneratingFuture { inner: future })
+        let payload = respond_request_json(
+            &prompt.to_prompt()?,
+            options,
+            Some(schema),
+            include_schema_in_prompt,
+        )?;
+        Ok(RespondGeneratingFuture {
+            pending: self.start(&payload),
+        })
     }
 }
 
@@ -524,17 +457,18 @@ impl AsyncAdapter {
     ///
     /// # Errors
     ///
-    /// Returns an [`FMError::AdapterInvalidName`] if the adapter is not found
-    /// or the name contains a NUL byte.
+    /// Returns the SDK's typed [`FMError`] (for example
+    /// [`FMError::AdapterInvalidName`]) if the adapter can't be loaded, or
+    /// [`FMError::InvalidArgument`] if the name contains a NUL byte.
     pub fn from_name(name: &str) -> Result<AdapterInitFuture, FMError> {
         let cname = CString::new(name).map_err(|e| {
             FMError::InvalidArgument(format!("NUL byte in adapter name: {e}").into())
         })?;
-        let (future, ctx) = AsyncCompletion::create();
-        unsafe {
-            ffi::fm_adapter_create_from_name_async(cname.as_ptr(), ctx, adapter_init_async_cb);
-        }
-        Ok(AdapterInitFuture { inner: future })
+        let (inner, context) = AsyncCompletion::create();
+        let task = SwiftTask::from_raw(unsafe {
+            ffi::fm_adapter_create_from_name_async(cname.as_ptr(), context, object_async_cb)
+        });
+        Ok(AdapterInitFuture { inner, _task: task })
     }
 
     /// Async version of `SystemLanguageModel.Adapter.compatibility(for:)`.
@@ -544,86 +478,114 @@ impl AsyncAdapter {
     ///
     /// # Errors
     ///
-    /// Returns an [`FMError::AdapterCompatibleNotFound`] on failure.
+    /// Returns an [`FMError`] if the name contains a NUL byte or the bridge
+    /// fails.
     pub fn compatibility(name: &str) -> Result<AdapterCompatibilityFuture, FMError> {
         let cname = CString::new(name).map_err(|e| {
             FMError::InvalidArgument(format!("NUL byte in adapter name: {e}").into())
         })?;
-        let (future, ctx) = AsyncCompletion::create();
-        unsafe {
-            ffi::fm_adapter_compatibility_async(cname.as_ptr(), ctx, adapter_compat_async_cb);
-        }
-        Ok(AdapterCompatibilityFuture { inner: future })
+        Ok(AdapterCompatibilityFuture {
+            pending: PendingText::start(|context, callback| unsafe {
+                ffi::fm_adapter_compatibility_async(cname.as_ptr(), context, callback)
+            }),
+        })
     }
 
     /// Async version of `SystemLanguageModel.Adapter.compile()`.
     #[must_use]
     pub fn compile(adapter: &Adapter) -> CompileAdapterFuture {
-        let (future, ctx) = AsyncCompletion::create();
-        unsafe {
-            ffi::fm_adapter_compile(adapter.ptr, ctx, adapter_compile_async_cb);
+        let adapter = adapter.ptr;
+        CompileAdapterFuture {
+            pending: PendingText::start(|context, callback| unsafe {
+                ffi::fm_adapter_compile(adapter, context, callback)
+            }),
         }
-        CompileAdapterFuture { inner: future }
     }
 }
 
-// ============================================================================
-// Internal JSON request builders
-// ============================================================================
-
-fn build_text_request_json(
-    prompt: &Prompt,
-    options: GenerationOptions,
-) -> Result<CString, FMError> {
-    build_request_json_inner(prompt, options, None, true)
-}
-
-fn build_structured_request_json(
-    prompt: &Prompt,
-    options: GenerationOptions,
-    schema: &GenerationSchema,
-    include_schema_in_prompt: bool,
-) -> Result<CString, FMError> {
-    build_request_json_inner(prompt, options, Some(schema), include_schema_in_prompt)
-}
-
-fn build_request_json_inner(
-    prompt: &Prompt,
-    options: GenerationOptions,
-    schema: Option<&GenerationSchema>,
-    include_schema_in_prompt: bool,
-) -> Result<CString, FMError> {
-    use crate::generation::SamplingMode;
+#[cfg(test)]
+mod tests {
+    use super::*;
     use serde_json::json;
 
-    let sampling = match options.sampling() {
-        SamplingMode::Default => json!({ "mode": "default" }),
-        SamplingMode::Greedy => json!({ "mode": "greedy" }),
-        SamplingMode::TopK(k) => json!({
-            "mode": "top_k",
-            "topK": k,
-            "seed": options.sampling_seed(),
-        }),
-        SamplingMode::TopP(p) => json!({
-            "mode": "top_p",
-            "topP": p,
-            "seed": options.sampling_seed(),
-        }),
-    };
-    let include_schema_in_prompt = schema.map_or(include_schema_in_prompt, |schema| {
-        schema.effective_include_schema_in_prompt(include_schema_in_prompt)
-    });
-    let payload = serde_json::to_string(&json!({
-        "prompt": prompt.to_bridge_value(),
-        "options": {
-            "temperature": options.temperature(),
-            "maximumResponseTokens": options.maximum_response_tokens(),
-            "sampling": sampling,
-        },
-        "schemaJSON": schema.map(GenerationSchema::bridge_request_json),
-        "includeSchemaInPrompt": include_schema_in_prompt,
-    }))
-    .map_err(|e| FMError::InvalidArgument(format!("request not JSON-serializable: {e}").into()))?;
-    CString::new(payload)
-        .map_err(|e| FMError::InvalidArgument(format!("request JSON contains NUL: {e}").into()))
+    fn bridge_string(value: &str) -> *mut c_char {
+        let value = CString::new(value).unwrap();
+        unsafe { ffi::fm_string_dup(value.as_ptr()) }
+    }
+
+    fn complete_text(
+        response: Option<&str>,
+        error: Option<&str>,
+        status: i32,
+    ) -> Result<String, FMError> {
+        let pending = PendingText::start(|context, callback| {
+            unsafe {
+                callback(
+                    context,
+                    response.map_or(core::ptr::null_mut(), bridge_string),
+                    error.map_or(core::ptr::null_mut(), bridge_string),
+                    status,
+                );
+            }
+            core::ptr::null_mut()
+        });
+        pollster::block_on(pending)
+    }
+
+    #[test]
+    fn async_errors_keep_their_type_and_metadata() {
+        let error = complete_text(
+            None,
+            Some(
+                &json!({
+                    "message": "request refused",
+                    "recoverySuggestion": "Try a safer prompt",
+                    "refusal": { "token": "refusal-token" }
+                })
+                .to_string(),
+            ),
+            ffi::status::REFUSAL,
+        )
+        .expect_err("refusal must fail");
+        assert!(matches!(error, FMError::Refusal(ref message) if message == "request refused"));
+        assert_eq!(
+            error.recovery_suggestion().as_deref(),
+            Some("Try a safer prompt")
+        );
+        assert!(error.refusal().is_some());
+
+        let error = complete_text(None, Some("busy"), ffi::status::CONCURRENT_REQUESTS)
+            .expect_err("busy session must fail");
+        assert!(matches!(error, FMError::ConcurrentRequests(_)));
+
+        let error = complete_text(None, None, ffi::status::CANCELLED).expect_err("cancelled");
+        assert_eq!(error, FMError::Cancelled);
+    }
+
+    #[test]
+    fn async_success_returns_the_response_text() {
+        assert_eq!(
+            complete_text(Some("payload"), None, ffi::status::OK).as_deref(),
+            Ok("payload")
+        );
+        assert!(complete_text(None, None, ffi::status::OK).is_err());
+    }
+
+    #[test]
+    fn async_object_errors_are_typed() {
+        let (inner, context) = AsyncCompletion::<Result<OpaquePtr, FMError>>::create();
+        unsafe {
+            object_async_cb(
+                context,
+                core::ptr::null_mut(),
+                bridge_string("adapter missing"),
+                ffi::status::ADAPTER_INVALID_NAME,
+            );
+        }
+        let future = AdapterInitFuture { inner, _task: None };
+        let error = pollster::block_on(future).expect_err("adapter lookup must fail");
+        assert!(
+            matches!(error, FMError::AdapterInvalidName(ref message) if message == "adapter missing")
+        );
+    }
 }

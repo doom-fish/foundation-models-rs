@@ -49,6 +49,7 @@ public func fm_session_create_ex(
     _ transcriptJSON: UnsafePointer<CChar>?,
     _ toolsJSON: UnsafePointer<CChar>?,
     _ toolContext: UnsafeMutableRawPointer?,
+    _ toolContextRelease: (@convention(c) (UnsafeMutableRawPointer?) -> Void)?,
     _ toolCallback: (@convention(c) (
         UnsafeMutableRawPointer?,
         UnsafePointer<CChar>?,
@@ -58,13 +59,16 @@ public func fm_session_create_ex(
     ) -> Int32)?,
     _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> UnsafeMutableRawPointer? {
+    let toolOwner = toolContext.flatMap { pointer in
+        toolContextRelease.map { RustToolContext(pointer: pointer, release: $0) }
+    }
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         do {
             let model = systemModel(from: modelPtr)
             let tools = try buildTools(
                 specsJSON: toolsJSON.map { String(cString: $0) },
-                context: toolContext,
+                owner: toolOwner,
                 callback: toolCallback
             )
             let session: LanguageModelSession
@@ -78,13 +82,14 @@ public func fm_session_create_ex(
             } else {
                 session = LanguageModelSession(model: model, tools: tools, instructions: nil)
             }
-            return Unmanaged.passRetained(session).toOpaque()
+            return Unmanaged.passRetained(SessionBox(session)).toOpaque()
         } catch {
             writeErrorOut(errorOut, error.localizedDescription)
             return nil
         }
     }
     #endif
+    _ = toolOwner
     writeErrorOut(errorOut, "FoundationModels requires macOS 26.0 or newer")
     return nil
 }
@@ -98,9 +103,8 @@ public func fm_session_prewarm_prompt_json(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         do {
-            let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
             let prompt = try promptJSON.map { try buildPrompt(from: decodeBridge(String(cString: $0), as: BridgePrompt.self)) }
-            session.prewarm(promptPrefix: prompt)
+            sessionBox(from: sessionPtr).session.prewarm(promptPrefix: prompt)
             return FM_OK
         } catch {
             let (code, message) = mapError(error)
@@ -124,19 +128,20 @@ public func fm_session_respond_request_json(
         UnsafeMutablePointer<CChar>?,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        let box = sessionBox(from: sessionPtr)
         let requestJSONString = String(cString: requestJSON)
-        Task.detached {
+        return startBridgeTask(gate: box.gate) {
             do {
+                try Task.checkCancellation()
                 let request = try decodeBridge(requestJSONString, as: BridgeResponseRequest.self)
                 let prompt = try buildPrompt(from: request.prompt)
-                let options = buildOptions(from: request.options)
+                let options = try buildOptions(from: request.options)
                 if let schemaJSON = request.schemaJSON {
                     let schema = try decodeGenerationSchema(from: schemaJSON)
-                    let response = try await session.respond(
+                    let response = try await box.session.respond(
                         to: prompt,
                         schema: schema,
                         includeSchemaInPrompt: request.includeSchemaInPrompt ?? true,
@@ -150,7 +155,7 @@ public func fm_session_respond_request_json(
                     )
                     callback(context, ffiString(try encodeBridge(payload)), nil, FM_OK)
                 } else {
-                    let response = try await session.respond(to: prompt, options: options)
+                    let response = try await box.session.respond(to: prompt, options: options)
                     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
                     let payload = BridgeTextResponse(
                         content: response.content,
@@ -164,10 +169,10 @@ public func fm_session_respond_request_json(
                 callback(context, nil, ffiString(message), code)
             }
         }
-        return
     }
     #endif
     callback(context, nil, ffiString("FoundationModels requires macOS 26.0 or newer"), FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_session_stream_request_json")
@@ -181,62 +186,65 @@ public func fm_session_stream_request_json(
         Bool,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+        let box = sessionBox(from: sessionPtr)
         let requestJSONString = String(cString: requestJSON)
-        Task.detached {
+        return startBridgeTask(gate: box.gate) {
             do {
+                try Task.checkCancellation()
                 let request = try decodeBridge(requestJSONString, as: BridgeResponseRequest.self)
                 let prompt = try buildPrompt(from: request.prompt)
-                let options = buildOptions(from: request.options)
+                let options = try buildOptions(from: request.options)
+                let entriesBefore = box.session.transcript.count
                 if let schemaJSON = request.schemaJSON {
                     let schema = try decodeGenerationSchema(from: schemaJSON)
-                    let stream = session.streamResponse(
+                    let stream = box.session.streamResponse(
                         to: prompt,
                         schema: schema,
                         includeSchemaInPrompt: request.includeSchemaInPrompt ?? true,
                         options: options
                     )
-                    for try await snapshot in stream {
-                        let payload = BridgeStructuredStreamSnapshot(
-                            content: bridgeGeneratedContent(snapshot.content),
-                            rawContent: bridgeGeneratedContent(snapshot.rawContent),
-                            isComplete: snapshot.content.isComplete
-                        )
-                        callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
+                    let cancelled: Bool
+                    do {
+                        for try await snapshot in stream {
+                            let payload = BridgeStructuredStreamSnapshot(
+                                content: bridgeGeneratedContent(snapshot.content),
+                                rawContent: bridgeGeneratedContent(snapshot.rawContent),
+                                isComplete: snapshot.content.isComplete
+                            )
+                            callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
+                        }
+                        cancelled = Task.isCancelled
+                        finishStream(cancelled: cancelled, context: context, callback: callback)
+                    } catch {
+                        cancelled = error is CancellationError || Task.isCancelled
+                        let (code, message) = mapError(error)
+                        callback(context, ffiString(message), true, code)
+                    }
+                    if cancelled {
+                        await settleCancelledStream(box.session, entriesBefore: entriesBefore)
                     }
                 } else {
-                    let stream = session.streamResponse(to: prompt, options: options)
-                    var lastEmitted = ""
-                    for try await snapshot in stream {
-                        let full = snapshot.content
-                        let delta: String
-                        if full.hasPrefix(lastEmitted) {
-                            delta = String(full.dropFirst(lastEmitted.count))
-                        } else {
-                            delta = full
-                        }
-                        lastEmitted = full
-                        let payload = BridgeTextStreamSnapshot(
-                            delta: delta,
-                            content: full,
-                            rawContent: bridgeGeneratedContent(snapshot.rawContent)
-                        )
-                        callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
+                    let cancelled = await streamTextResponse(
+                        box.session.streamResponse(to: prompt, options: options),
+                        context: context,
+                        callback: callback
+                    )
+                    if cancelled {
+                        await settleCancelledStream(box.session, entriesBefore: entriesBefore)
                     }
                 }
-                callback(context, nil, true, FM_OK)
             } catch {
                 let (code, message) = mapError(error)
                 callback(context, ffiString(message), true, code)
             }
         }
-        return
     }
     #endif
     callback(context, ffiString("FoundationModels requires macOS 26.0 or newer"), true, FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_session_log_feedback_attachment_json")
@@ -249,7 +257,7 @@ public func fm_session_log_feedback_attachment_json(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         do {
-            let session = Unmanaged<LanguageModelSession>.fromOpaque(sessionPtr).takeUnretainedValue()
+            let session = sessionBox(from: sessionPtr).session
             let request = try decodeBridge(String(cString: requestJSON), as: BridgeFeedbackRequest.self)
             let issues = request.issues.map {
                 LanguageModelFeedback.Issue(

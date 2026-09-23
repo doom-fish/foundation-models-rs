@@ -153,6 +153,38 @@ func encodedTextResponse(_ response: LanguageModelSession.Response<String>) thro
 }
 
 @available(macOS 26.0, *)
+func finishStream(
+    cancelled: Bool,
+    context: UnsafeMutableRawPointer?,
+    callback: @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafeMutablePointer<CChar>?,
+        Bool,
+        Int32
+    ) -> Void
+) {
+    if cancelled {
+        let (code, message) = mapError(CancellationError())
+        callback(context, ffiString(message), true, code)
+    } else {
+        callback(context, nil, true, FM_OK)
+    }
+}
+
+@available(macOS 26.0, *)
+func settleCancelledStream(_ session: LanguageModelSession, entriesBefore: Int) async {
+    await Task.detached {
+        for _ in 0..<200 {
+            if session.transcript.count <= entriesBefore {
+                return
+            }
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
+    }.value
+}
+
+@available(macOS 26.0, *)
+@discardableResult
 func streamTextResponse(
     _ stream: LanguageModelSession.ResponseStream<String>,
     context: UnsafeMutableRawPointer?,
@@ -162,29 +194,23 @@ func streamTextResponse(
         Bool,
         Int32
     ) -> Void
-) async {
+) async -> Bool {
     do {
-        var lastEmitted = ""
         for try await snapshot in stream {
-            let full = snapshot.content
-            let delta: String
-            if full.hasPrefix(lastEmitted) {
-                delta = String(full.dropFirst(lastEmitted.count))
-            } else {
-                delta = full
-            }
-            lastEmitted = full
             let payload = BridgeTextStreamSnapshot(
-                delta: delta,
-                content: full,
+                content: snapshot.content,
                 rawContent: bridgeGeneratedContent(snapshot.rawContent)
             )
             callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
         }
-        callback(context, nil, true, FM_OK)
+        let cancelled = Task.isCancelled
+        finishStream(cancelled: cancelled, context: context, callback: callback)
+        return cancelled
     } catch {
+        let cancelled = error is CancellationError || Task.isCancelled
         let (code, message) = mapError(error)
         callback(context, ffiString(message), true, code)
+        return cancelled
     }
 }
 #endif
@@ -268,16 +294,17 @@ public func fm_refusal_explanation_json(
         UnsafeMutablePointer<CChar>?,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         let bridgeRefusal = BridgeRefusal(token: String(cString: refusalToken))
         guard let refusal = RefusalRegistry.shared.resolve(bridgeRefusal) else {
             callback(context, nil, ffiString("unknown refusal token"), FM_INVALID_ARGUMENT)
-            return
+            return nil
         }
-        Task.detached {
+        return startBridgeTask {
             do {
+                try Task.checkCancellation()
                 let response = try await refusal.explanation
                 callback(context, ffiString(try encodedTextResponse(response)), nil, FM_OK)
             } catch {
@@ -285,10 +312,10 @@ public func fm_refusal_explanation_json(
                 callback(context, nil, ffiString(message), code)
             }
         }
-        return
     }
     #endif
     callback(context, nil, ffiString("FoundationModels requires macOS 26.0 or newer"), FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_refusal_explanation_from_transcript_json")
@@ -301,12 +328,14 @@ public func fm_refusal_explanation_from_transcript_json(
         UnsafeMutablePointer<CChar>?,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        Task.detached {
+        let transcriptJSONString = String(cString: transcriptJSON)
+        return startBridgeTask {
             do {
-                let transcript = try decodeTranscript(from: String(cString: transcriptJSON))
+                try Task.checkCancellation()
+                let transcript = try decodeTranscript(from: transcriptJSONString)
                 let refusal = LanguageModelSession.GenerationError.Refusal(
                     transcriptEntries: Array(transcript)
                 )
@@ -317,10 +346,10 @@ public func fm_refusal_explanation_from_transcript_json(
                 callback(context, nil, ffiString(message), code)
             }
         }
-        return
     }
     #endif
     callback(context, nil, ffiString("FoundationModels requires macOS 26.0 or newer"), FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_refusal_explanation_stream")
@@ -333,21 +362,21 @@ public func fm_refusal_explanation_stream(
         Bool,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         let bridgeRefusal = BridgeRefusal(token: String(cString: refusalToken))
         guard let refusal = RefusalRegistry.shared.resolve(bridgeRefusal) else {
             callback(context, ffiString("unknown refusal token"), true, FM_INVALID_ARGUMENT)
-            return
+            return nil
         }
-        Task.detached {
+        return startBridgeTask {
             await streamTextResponse(refusal.explanationStream, context: context, callback: callback)
         }
-        return
     }
     #endif
     callback(context, ffiString("FoundationModels requires macOS 26.0 or newer"), true, FM_MODEL_UNAVAILABLE)
+    return nil
 }
 
 @_cdecl("fm_refusal_explanation_stream_from_transcript_json")
@@ -360,12 +389,14 @@ public func fm_refusal_explanation_stream_from_transcript_json(
         Bool,
         Int32
     ) -> Void
-) {
+) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        Task.detached {
+        let transcriptJSONString = String(cString: transcriptJSON)
+        return startBridgeTask {
             do {
-                let transcript = try decodeTranscript(from: String(cString: transcriptJSON))
+                try Task.checkCancellation()
+                let transcript = try decodeTranscript(from: transcriptJSONString)
                 let refusal = LanguageModelSession.GenerationError.Refusal(
                     transcriptEntries: Array(transcript)
                 )
@@ -375,8 +406,8 @@ public func fm_refusal_explanation_stream_from_transcript_json(
                 callback(context, ffiString(message), true, code)
             }
         }
-        return
     }
     #endif
     callback(context, ffiString("FoundationModels requires macOS 26.0 or newer"), true, FM_MODEL_UNAVAILABLE)
+    return nil
 }
