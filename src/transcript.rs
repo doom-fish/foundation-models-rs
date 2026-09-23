@@ -80,7 +80,7 @@ impl Transcript {
     /// transcript encoding.
     pub fn from_json_str(json: &str) -> Result<Self, FMError> {
         let root: Value = serde_json::from_str(json)
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
         let entries = root
             .get("transcript")
             .and_then(|transcript| transcript.get("entries"))
@@ -109,7 +109,7 @@ impl Transcript {
                 "entries": self.entries.iter().map(Entry::to_json_value).collect::<Result<Vec<_>, _>>()?
             }
         }))
-        .map_err(|error| FMError::InvalidArgument(format!("failed to encode transcript JSON: {error}")))
+        .map_err(|error| FMError::InvalidArgument(format!("failed to encode transcript JSON: {error}").into()))
     }
 }
 
@@ -175,9 +175,9 @@ impl Entry {
                 Ok(Self::ToolCalls(ToolCalls::from_json_value(value)?))
             }
             "response" => Ok(Self::Response(TranscriptResponse::from_json_value(value)?)),
-            other => Err(FMError::DecodingFailure(format!(
-                "unsupported transcript role `{other}`"
-            ))),
+            other => Err(FMError::DecodingFailure(
+                format!("unsupported transcript role `{other}`").into(),
+            )),
         }
     }
 
@@ -587,16 +587,19 @@ fn parse_segments(value: Option<&Value>) -> Result<Vec<Segment>, FMError> {
                             .to_string(),
                         content: GeneratedContent::from_json_str(
                             &serde_json::to_string(content).map_err(|error| {
-                                FMError::InvalidArgument(format!(
-                                    "structured segment content is not valid JSON: {error}"
-                                ))
+                                FMError::InvalidArgument(
+                                    format!(
+                                        "structured segment content is not valid JSON: {error}"
+                                    )
+                                    .into(),
+                                )
                             })?,
                         )?,
                     }))
                 }
-                other => Err(FMError::DecodingFailure(format!(
-                    "unsupported segment type `{other}`"
-                ))),
+                other => Err(FMError::DecodingFailure(
+                    format!("unsupported segment type `{other}`").into(),
+                )),
             }
         })
         .collect()
@@ -619,9 +622,10 @@ fn segments_to_json(segments: &[Segment]) -> Result<Value, FMError> {
                 }) => {
                     let content_value: Value = serde_json::from_str(&content.json_string()?)
                         .map_err(|error| {
-                            FMError::InvalidArgument(format!(
-                                "structured segment content is not valid JSON: {error}"
-                            ))
+                            FMError::InvalidArgument(
+                                format!("structured segment content is not valid JSON: {error}")
+                                    .into(),
+                            )
                         })?;
                     Ok(json!({
                         "type": "structure",
@@ -660,9 +664,9 @@ fn parse_tool_definitions(value: Option<&Value>) -> Result<Vec<ToolDefinition>, 
                     .unwrap_or_default(),
                 crate::schema::GenerationSchema::from_json_schema_unchecked(
                     serde_json::to_string(parameters).map_err(|error| {
-                        FMError::InvalidArgument(format!(
-                            "tool parameters are not valid JSON: {error}"
-                        ))
+                        FMError::InvalidArgument(
+                            format!("tool parameters are not valid JSON: {error}").into(),
+                        )
                     })?,
                 ),
             ))

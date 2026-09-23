@@ -33,9 +33,9 @@ fn response_format_generating_uses_schema_name() -> Result<(), FMError> {
     assert_eq!(response_format.name(), "Choice");
 
     let actual: Value = serde_json::from_str(response_format.schema().json_schema())
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     let expected: Value = serde_json::from_str(Choice::generation_schema()?.json_schema())
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     assert_eq!(actual, expected);
     Ok(())
 }
@@ -49,10 +49,10 @@ fn tool_generable_infers_schema_and_definition() -> Result<(), FMError> {
     assert_eq!(tool.spec().name, "echo_choice");
 
     let actual_parameters: Value = serde_json::from_str(tool.spec().parameters.json_schema())
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     let expected_parameters: Value =
         serde_json::from_str(Choice::generation_schema()?.json_schema())
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     assert_eq!(actual_parameters, expected_parameters);
 
     let definition = tool.definition();
@@ -60,7 +60,7 @@ fn tool_generable_infers_schema_and_definition() -> Result<(), FMError> {
     assert_eq!(definition.description, "Echo a named choice");
 
     let definition_parameters: Value = serde_json::from_str(definition.parameters.json_schema())
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     assert_eq!(definition_parameters, expected_parameters);
     assert_eq!(tool.spec().definition(), definition);
     Ok(())

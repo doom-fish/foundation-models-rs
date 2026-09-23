@@ -255,9 +255,9 @@ impl LanguageModelSession {
         options: GenerationOptions,
     ) -> Result<String, FMError> {
         let prompt_c = CString::new(prompt)
-            .map_err(|e| FMError::InvalidArgument(format!("prompt NUL byte: {e}")))?;
+            .map_err(|e| FMError::InvalidArgument(format!("prompt NUL byte: {e}").into()))?;
         let schema_c = CString::new(schema)
-            .map_err(|e| FMError::InvalidArgument(format!("schema NUL byte: {e}")))?;
+            .map_err(|e| FMError::InvalidArgument(format!("schema NUL byte: {e}").into()))?;
         let opts = options.to_ffi();
         let (tx, rx) = mpsc::channel();
         let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
@@ -379,7 +379,7 @@ impl LanguageModelSession {
     {
         let prompt = prompt.to_prompt()?;
         let prompt_json = CString::new(prompt.to_bridge_json()?).map_err(|error| {
-            FMError::InvalidArgument(format!("prompt JSON contains a NUL byte: {error}"))
+            FMError::InvalidArgument(format!("prompt JSON contains a NUL byte: {error}").into())
         })?;
         let mut error: *mut c_char = ptr::null_mut();
         let status = unsafe {
@@ -437,7 +437,7 @@ impl LanguageModelSession {
         let payload = respond_request_json(&prompt, options, None, true)?;
         let payload = request_response(self.ptr, &payload)?;
         let response: BridgeTextResponse = serde_json::from_str(&payload)
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
         Ok(SessionResponse {
             content: response.content,
             raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
@@ -488,7 +488,7 @@ impl LanguageModelSession {
             respond_request_json(&prompt, options, Some(schema), include_schema_in_prompt)?;
         let payload = request_response(self.ptr, &payload)?;
         let response: BridgeStructuredResponse = serde_json::from_str(&payload)
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
         Ok(SessionResponse {
             content: GeneratedContent::from_bridge_payload(response.content, true)?,
             raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
@@ -595,7 +595,9 @@ impl LanguageModelSession {
         request: FeedbackAttachmentRequest,
     ) -> Result<Vec<u8>, FMError> {
         let request_json = CString::new(request.to_bridge_json()?).map_err(|error| {
-            FMError::InvalidArgument(format!("feedback request contains a NUL byte: {error}"))
+            FMError::InvalidArgument(
+                format!("feedback request contains a NUL byte: {error}").into(),
+            )
         })?;
         let mut length = 0usize;
         let mut error: *mut c_char = ptr::null_mut();
@@ -714,21 +716,25 @@ impl<'a> SessionBuilder<'a> {
             .map(CString::new)
             .transpose()
             .map_err(|error| {
-                FMError::InvalidArgument(format!("instructions JSON contains a NUL byte: {error}"))
+                FMError::InvalidArgument(
+                    format!("instructions JSON contains a NUL byte: {error}").into(),
+                )
             })?;
         let transcript_c = transcript_json
             .as_deref()
             .map(CString::new)
             .transpose()
             .map_err(|error| {
-                FMError::InvalidArgument(format!("transcript JSON contains a NUL byte: {error}"))
+                FMError::InvalidArgument(
+                    format!("transcript JSON contains a NUL byte: {error}").into(),
+                )
             })?;
         let tools_c = tools_json
             .as_deref()
             .map(CString::new)
             .transpose()
             .map_err(|error| {
-                FMError::InvalidArgument(format!("tool JSON contains a NUL byte: {error}"))
+                FMError::InvalidArgument(format!("tool JSON contains a NUL byte: {error}").into())
             })?;
 
         let tool_context = tool_registry.as_ref().map_or(ptr::null_mut(), |registry| {
@@ -895,9 +901,9 @@ impl FeedbackAttachmentRequest {
             "desiredOutputTranscriptJSON": desired_output_json,
         }))
         .map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "feedback request is not JSON-serializable: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("feedback request is not JSON-serializable: {error}").into(),
+            )
         })
     }
 }
@@ -968,10 +974,10 @@ fn respond_request_json(
         "includeSchemaInPrompt": include_schema_in_prompt,
     }))
     .map_err(|error| {
-        FMError::InvalidArgument(format!("request is not JSON-serializable: {error}"))
+        FMError::InvalidArgument(format!("request is not JSON-serializable: {error}").into())
     })?;
     CString::new(payload).map_err(|error| {
-        FMError::InvalidArgument(format!("request JSON contains a NUL byte: {error}"))
+        FMError::InvalidArgument(format!("request JSON contains a NUL byte: {error}").into())
     })
 }
 
@@ -992,7 +998,7 @@ pub(crate) fn decode_bridge_text_response(
     payload: &str,
 ) -> Result<SessionResponse<String>, FMError> {
     let response: BridgeTextResponse = serde_json::from_str(payload)
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     Ok(SessionResponse {
         content: response.content,
         raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
@@ -1207,7 +1213,7 @@ unsafe extern "C" fn json_text_stream_trampoline(
                 Ok(_) => {}
                 Err(error) => {
                     // Non-terminal decode failure: same handling as a panic.
-                    let err = FMError::DecodingFailure(error.to_string());
+                    let err = FMError::DecodingFailure(error.to_string().into());
                     state.finished.store(true, Ordering::Release);
                     {
                         let mut cb = state.on_chunk.lock().expect("user callback mutex poisoned");
@@ -1318,7 +1324,7 @@ unsafe extern "C" fn structured_stream_trampoline(
                 Err(error) => {
                     // Non-terminal decode failure: mark finished and signal the
                     // waiter, but leave the `Arc` alive for Swift's terminal call.
-                    let err = FMError::DecodingFailure(error.to_string());
+                    let err = FMError::DecodingFailure(error.to_string().into());
                     state.finished.store(true, Ordering::Release);
                     {
                         let mut cb = state

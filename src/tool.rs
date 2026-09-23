@@ -180,7 +180,9 @@ impl ToolOutput {
     pub(crate) fn to_bridge_json(&self) -> Result<String, FMError> {
         serde_json::to_string(&json!({ "prompt": self.prompt.to_bridge_value() })).map_err(
             |error| {
-                FMError::InvalidArgument(format!("tool output is not JSON-serializable: {error}"))
+                FMError::InvalidArgument(
+                    format!("tool output is not JSON-serializable: {error}").into(),
+                )
             },
         )
     }
@@ -238,13 +240,15 @@ impl ToolRegistry {
             })
             .collect::<Vec<_>>();
         serde_json::to_string(&specs).map_err(|error| {
-            FMError::InvalidArgument(format!("tool specs are not JSON-serializable: {error}"))
+            FMError::InvalidArgument(
+                format!("tool specs are not JSON-serializable: {error}").into(),
+            )
         })
     }
 
     fn invoke(&self, tool_name: &str, arguments: GeneratedContent) -> Result<ToolOutput, FMError> {
         let tool = self.tools.get(tool_name).ok_or_else(|| {
-            FMError::ToolCallFailed(format!("tool `{tool_name}` is not registered"))
+            FMError::ToolCallFailed(format!("tool `{tool_name}` is not registered").into())
         })?;
         (tool.handler)(arguments)
     }

@@ -72,9 +72,9 @@ fn transcript_round_trips_all_entry_kinds() -> Result<(), FMError> {
     let encoded = transcript.to_json_string()?;
     let decoded = Transcript::from_json_str(&encoded)?;
     let encoded_value: Value = serde_json::from_str(&encoded)
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
     let reencoded_value: Value = serde_json::from_str(&decoded.to_json_string()?)
-        .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
 
     assert_eq!(reencoded_value, encoded_value);
     assert_eq!(decoded.len(), 5);

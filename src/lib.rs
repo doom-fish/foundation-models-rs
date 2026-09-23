@@ -95,8 +95,8 @@ pub use content::{
     ToGeneratedContent,
 };
 pub use error::{
-    AdapterAssetErrorContext, FMError, GenerationErrorContext, Refusal, SchemaErrorContext,
-    ToolCallError, Unavailability,
+    AdapterAssetErrorContext, ErrorMessage, FMError, GenerationErrorContext, Refusal,
+    SchemaErrorContext, ToolCallError, Unavailability,
 };
 pub use generation::{GenerationOptions, SamplingMode};
 pub use model::{
@@ -128,8 +128,8 @@ pub mod prelude {
         ToGeneratedContent,
     };
     pub use crate::error::{
-        AdapterAssetErrorContext, FMError, GenerationErrorContext, Refusal, SchemaErrorContext,
-        ToolCallError, Unavailability,
+        AdapterAssetErrorContext, ErrorMessage, FMError, GenerationErrorContext, Refusal,
+        SchemaErrorContext, ToolCallError, Unavailability,
     };
     pub use crate::generation::{GenerationOptions, SamplingMode};
     pub use crate::model::{

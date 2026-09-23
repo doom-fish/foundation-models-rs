@@ -2,9 +2,8 @@
 
 use core::ffi::c_char;
 use core::fmt;
-use std::collections::HashMap;
+use core::ops::Deref;
 use std::ffi::{CStr, CString};
-use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
 
@@ -148,9 +147,9 @@ impl Refusal {
     pub fn explanation(&self) -> Result<SessionResponse<String>, FMError> {
         if let Some(token) = &self.token {
             let token = CString::new(token.as_str()).map_err(|error| {
-                FMError::InvalidArgument(format!(
-                    "refusal token contains an interior NUL byte: {error}"
-                ))
+                FMError::InvalidArgument(
+                    format!("refusal token contains an interior NUL byte: {error}").into(),
+                )
             })?;
             return session::request_text_response_with(|context, callback| unsafe {
                 ffi::fm_refusal_explanation_json(token.as_ptr(), context, callback)
@@ -161,9 +160,9 @@ impl Refusal {
             FMError::InvalidArgument("refusal does not contain any transcript state".into())
         })?;
         let transcript_json = CString::new(transcript.to_json_string()?).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "refusal transcript JSON contains an interior NUL byte: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("refusal transcript JSON contains an interior NUL byte: {error}").into(),
+            )
         })?;
         session::request_text_response_with(|context, callback| unsafe {
             ffi::fm_refusal_explanation_from_transcript_json(
@@ -185,9 +184,9 @@ impl Refusal {
     {
         if let Some(token) = &self.token {
             let token = CString::new(token.as_str()).map_err(|error| {
-                FMError::InvalidArgument(format!(
-                    "refusal token contains an interior NUL byte: {error}"
-                ))
+                FMError::InvalidArgument(
+                    format!("refusal token contains an interior NUL byte: {error}").into(),
+                )
             })?;
             return session::run_text_stream_with(
                 |context, callback| unsafe {
@@ -201,9 +200,9 @@ impl Refusal {
             FMError::InvalidArgument("refusal does not contain any transcript state".into())
         })?;
         let transcript_json = CString::new(transcript.to_json_string()?).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "refusal transcript JSON contains an interior NUL byte: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("refusal transcript JSON contains an interior NUL byte: {error}").into(),
+            )
         })?;
         session::run_text_stream_with(
             |context, callback| unsafe {
@@ -274,8 +273,9 @@ struct BridgeErrorPayload {
 }
 
 impl BridgeErrorPayload {
-    fn into_metadata(self) -> ErrorMetadata {
-        ErrorMetadata {
+    fn into_message(self) -> ErrorMessage {
+        let text = self.message;
+        let metadata = ErrorMetadata {
             recovery_suggestion: self.recovery_suggestion,
             failure_reason: self.failure_reason,
             generation_error_context: self
@@ -300,40 +300,107 @@ impl BridgeErrorPayload {
                     error.underlying_error,
                 )
             }),
+        };
+        ErrorMessage {
+            text,
+            metadata: (metadata != ErrorMetadata::default()).then(|| Box::new(metadata)),
         }
     }
 }
 
-fn metadata_registry() -> &'static Mutex<HashMap<usize, ErrorMetadata>> {
-    static REGISTRY: OnceLock<Mutex<HashMap<usize, ErrorMetadata>>> = OnceLock::new();
-    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+#[derive(Clone, Default)]
+pub struct ErrorMessage {
+    text: String,
+    metadata: Option<Box<ErrorMetadata>>,
 }
 
-fn register_metadata(message: &str, metadata: ErrorMetadata) {
-    if metadata == ErrorMetadata::default() {
-        return;
+impl ErrorMessage {
+    #[must_use]
+    pub fn new(text: impl Into<String>) -> Self {
+        Self {
+            text: text.into(),
+            metadata: None,
+        }
     }
-    metadata_registry()
-        .lock()
-        .expect("error metadata registry mutex poisoned")
-        .insert(message.as_ptr() as usize, metadata);
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
 }
 
-fn clone_message_with_metadata(message: &str) -> String {
-    let cloned = message.to_owned();
-    let metadata = metadata_registry()
-        .lock()
-        .expect("error metadata registry mutex poisoned")
-        .get(&(message.as_ptr() as usize))
-        .cloned();
-    if let Some(metadata) = metadata {
-        register_metadata(&cloned, metadata);
+impl Deref for ErrorMessage {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.text
     }
-    cloned
+}
+
+impl AsRef<str> for ErrorMessage {
+    fn as_ref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl fmt::Display for ErrorMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.text)
+    }
+}
+
+impl fmt::Debug for ErrorMessage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.text, f)
+    }
+}
+
+impl PartialEq for ErrorMessage {
+    fn eq(&self, other: &Self) -> bool {
+        self.text == other.text
+    }
+}
+
+impl Eq for ErrorMessage {}
+
+impl PartialEq<str> for ErrorMessage {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+
+impl PartialEq<&str> for ErrorMessage {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+impl PartialEq<String> for ErrorMessage {
+    fn eq(&self, other: &String) -> bool {
+        self.text == *other
+    }
+}
+
+impl From<String> for ErrorMessage {
+    fn from(text: String) -> Self {
+        Self::new(text)
+    }
+}
+
+impl From<&str> for ErrorMessage {
+    fn from(text: &str) -> Self {
+        Self::new(text)
+    }
+}
+
+impl From<ErrorMessage> for String {
+    fn from(message: ErrorMessage) -> Self {
+        message.text
+    }
 }
 
 /// Top-level error type returned by all fallible APIs in this crate.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum FMError {
     /// `FoundationModels` is not available on this device.
@@ -341,99 +408,45 @@ pub enum FMError {
     /// See [`Unavailability`] for the specific reason.
     ModelUnavailable {
         reason: Unavailability,
-        message: String,
+        message: ErrorMessage,
     },
     /// The model refused to produce a response because the prompt or
     /// generated content tripped a safety guardrail.
-    GuardrailViolation(String),
+    GuardrailViolation(ErrorMessage),
     /// The combined prompt + history exceeds the model's context window.
-    ContextWindowExceeded(String),
+    ContextWindowExceeded(ErrorMessage),
     /// The requested locale or language is not supported by the on-device model.
-    UnsupportedLanguage(String),
+    UnsupportedLanguage(ErrorMessage),
     /// On-device model assets are still downloading or otherwise unavailable.
-    AssetsUnavailable(String),
+    AssetsUnavailable(ErrorMessage),
     /// The session was rate-limited (typically only relevant on Mac with
     /// extended generation budgets).
-    RateLimited(String),
+    RateLimited(ErrorMessage),
     /// Structured generation failed to decode the model's output into the
     /// requested `Generable` schema.
-    DecodingFailure(String),
+    DecodingFailure(ErrorMessage),
     /// The model refused the request (distinct from a guardrail violation —
     /// the model itself declined to answer).
-    Refusal(String),
+    Refusal(ErrorMessage),
     /// Too many concurrent generation requests against the same session.
-    ConcurrentRequests(String),
+    ConcurrentRequests(ErrorMessage),
     /// The supplied [`crate::schema::GenerationGuide`] is unsupported by the on-device model.
-    UnsupportedGuide(String),
+    UnsupportedGuide(ErrorMessage),
     /// A tool invocation failed while the model was using `Tool` calling.
-    ToolCallFailed(String),
+    ToolCallFailed(ErrorMessage),
     /// An adapter asset pack was invalid.
-    AdapterInvalidAsset(String),
+    AdapterInvalidAsset(ErrorMessage),
     /// The requested adapter name was invalid.
-    AdapterInvalidName(String),
+    AdapterInvalidName(ErrorMessage),
     /// No compatible adapter could be found for the requested name.
-    AdapterCompatibleNotFound(String),
+    AdapterCompatibleNotFound(ErrorMessage),
     /// The generation Task was cancelled before completion.
     Cancelled,
     /// An invalid argument crossed the FFI boundary (e.g. a NUL byte in a prompt).
-    InvalidArgument(String),
+    InvalidArgument(ErrorMessage),
     /// Catch-all for unmapped Swift errors. Inspect [`code`](Self::code) and
     /// [`message`](Self::message) for diagnostics.
-    Unknown { code: i32, message: String },
-}
-
-impl Clone for FMError {
-    fn clone(&self) -> Self {
-        match self {
-            Self::ModelUnavailable { reason, message } => Self::ModelUnavailable {
-                reason: *reason,
-                message: clone_message_with_metadata(message),
-            },
-            Self::GuardrailViolation(message) => {
-                Self::GuardrailViolation(clone_message_with_metadata(message))
-            }
-            Self::ContextWindowExceeded(message) => {
-                Self::ContextWindowExceeded(clone_message_with_metadata(message))
-            }
-            Self::UnsupportedLanguage(message) => {
-                Self::UnsupportedLanguage(clone_message_with_metadata(message))
-            }
-            Self::AssetsUnavailable(message) => {
-                Self::AssetsUnavailable(clone_message_with_metadata(message))
-            }
-            Self::RateLimited(message) => Self::RateLimited(clone_message_with_metadata(message)),
-            Self::DecodingFailure(message) => {
-                Self::DecodingFailure(clone_message_with_metadata(message))
-            }
-            Self::Refusal(message) => Self::Refusal(clone_message_with_metadata(message)),
-            Self::ConcurrentRequests(message) => {
-                Self::ConcurrentRequests(clone_message_with_metadata(message))
-            }
-            Self::UnsupportedGuide(message) => {
-                Self::UnsupportedGuide(clone_message_with_metadata(message))
-            }
-            Self::ToolCallFailed(message) => {
-                Self::ToolCallFailed(clone_message_with_metadata(message))
-            }
-            Self::AdapterInvalidAsset(message) => {
-                Self::AdapterInvalidAsset(clone_message_with_metadata(message))
-            }
-            Self::AdapterInvalidName(message) => {
-                Self::AdapterInvalidName(clone_message_with_metadata(message))
-            }
-            Self::AdapterCompatibleNotFound(message) => {
-                Self::AdapterCompatibleNotFound(clone_message_with_metadata(message))
-            }
-            Self::Cancelled => Self::Cancelled,
-            Self::InvalidArgument(message) => {
-                Self::InvalidArgument(clone_message_with_metadata(message))
-            }
-            Self::Unknown { code, message } => Self::Unknown {
-                code: *code,
-                message: clone_message_with_metadata(message),
-            },
-        }
-    }
+    Unknown { code: i32, message: ErrorMessage },
 }
 
 /// Reason why [`SystemLanguageModel`](crate::SystemLanguageModel) is unavailable.
@@ -454,7 +467,7 @@ pub enum Unavailability {
 }
 
 impl FMError {
-    fn message_storage(&self) -> Option<&String> {
+    fn message_storage(&self) -> Option<&ErrorMessage> {
         match self {
             Self::ModelUnavailable { message, .. }
             | Self::GuardrailViolation(message)
@@ -476,13 +489,8 @@ impl FMError {
         }
     }
 
-    fn metadata(&self) -> Option<ErrorMetadata> {
-        let message = self.message_storage()?;
-        metadata_registry()
-            .lock()
-            .expect("error metadata registry mutex poisoned")
-            .get(&(message.as_ptr() as usize))
-            .cloned()
+    fn metadata(&self) -> Option<&ErrorMetadata> {
+        self.message_storage()?.metadata.as_deref()
     }
 
     /// Numeric status code reported by the Swift bridge. Useful for matching
@@ -529,7 +537,7 @@ impl FMError {
             | Self::AdapterInvalidName(message)
             | Self::AdapterCompatibleNotFound(message)
             | Self::InvalidArgument(message)
-            | Self::Unknown { message, .. } => message,
+            | Self::Unknown { message, .. } => message.as_str(),
             Self::Cancelled => "generation cancelled",
         }
     }
@@ -537,43 +545,43 @@ impl FMError {
     /// Structured generation-error context, when available.
     #[must_use]
     pub fn generation_error_context(&self) -> Option<GenerationErrorContext> {
-        self.metadata()?.generation_error_context
+        self.metadata()?.generation_error_context.clone()
     }
 
     /// Structured adapter-asset error context, when available.
     #[must_use]
     pub fn adapter_asset_error_context(&self) -> Option<AdapterAssetErrorContext> {
-        self.metadata()?.adapter_asset_error_context
+        self.metadata()?.adapter_asset_error_context.clone()
     }
 
     /// Structured schema-error context, when available.
     #[must_use]
     pub fn schema_error_context(&self) -> Option<SchemaErrorContext> {
-        self.metadata()?.schema_error_context
+        self.metadata()?.schema_error_context.clone()
     }
 
     /// Localized recovery suggestion, when the SDK provided one.
     #[must_use]
     pub fn recovery_suggestion(&self) -> Option<String> {
-        self.metadata()?.recovery_suggestion
+        self.metadata()?.recovery_suggestion.clone()
     }
 
     /// Localized failure reason, when the SDK provided one.
     #[must_use]
     pub fn failure_reason(&self) -> Option<String> {
-        self.metadata()?.failure_reason
+        self.metadata()?.failure_reason.clone()
     }
 
     /// Typed refusal helper, when this error came from a refusal.
     #[must_use]
     pub fn refusal(&self) -> Option<Refusal> {
-        self.metadata()?.refusal
+        self.metadata()?.refusal.clone()
     }
 
     /// Typed tool-call failure metadata, when available.
     #[must_use]
     pub fn tool_call_error(&self) -> Option<ToolCallError> {
-        self.metadata()?.tool_call_error
+        self.metadata()?.tool_call_error.clone()
     }
 }
 
@@ -599,17 +607,16 @@ pub(crate) fn from_swift(status: i32, error_str: *mut c_char) -> FMError {
         unsafe { ffi::fm_string_free(error_str) };
         value
     };
+    from_swift_message(status, raw_message)
+}
 
-    let (message, metadata) = match serde_json::from_str::<BridgeErrorPayload>(&raw_message) {
-        Ok(payload) => {
-            let message = payload.message.clone();
-            let metadata = payload.into_metadata();
-            (message, Some(metadata))
-        }
-        Err(_) => (raw_message, None),
+pub(crate) fn from_swift_message(status: i32, raw_message: String) -> FMError {
+    let message = match serde_json::from_str::<BridgeErrorPayload>(&raw_message) {
+        Ok(payload) => payload.into_message(),
+        Err(_) => ErrorMessage::new(raw_message),
     };
 
-    let error = match status {
+    match status {
         ffi::status::MODEL_UNAVAILABLE => FMError::ModelUnavailable {
             reason: Unavailability::Unknown,
             message,
@@ -630,13 +637,7 @@ pub(crate) fn from_swift(status: i32, error_str: *mut c_char) -> FMError {
         ffi::status::CANCELLED => FMError::Cancelled,
         ffi::status::INVALID_ARGUMENT => FMError::InvalidArgument(message),
         code => FMError::Unknown { code, message },
-    };
-
-    if let (Some(message), Some(metadata)) = (error.message_storage(), metadata) {
-        register_metadata(message, metadata);
     }
-
-    error
 }
 
 #[cfg(test)]
@@ -678,6 +679,86 @@ mod tests {
             "guardrail refusal"
         );
         assert_eq!(cloned.refusal(), Some(Refusal::from_token("refusal-token")));
+    }
+
+    #[test]
+    fn metadata_stays_with_its_own_error() {
+        let refused = from_swift_message(
+            ffi::status::REFUSAL,
+            json!({
+                "message": "request refused",
+                "recoverySuggestion": "Try a safer prompt",
+                "refusal": { "token": "first-token" }
+            })
+            .to_string(),
+        );
+        let plain = from_swift_message(
+            ffi::status::REFUSAL,
+            json!({ "message": "request refused" }).to_string(),
+        );
+
+        assert_eq!(refused, plain);
+        assert_eq!(plain.recovery_suggestion(), None);
+        assert_eq!(plain.refusal(), None);
+        assert_eq!(
+            refused.recovery_suggestion().as_deref(),
+            Some("Try a safer prompt")
+        );
+        assert_eq!(refused.refusal(), Some(Refusal::from_token("first-token")));
+    }
+
+    #[test]
+    fn freed_errors_do_not_leak_metadata_into_new_ones() {
+        for round in 0..64 {
+            let with_metadata = from_swift_message(
+                ffi::status::TOOL_CALL_FAILED,
+                json!({
+                    "message": format!("tool failed {round}"),
+                    "failureReason": "stale reason",
+                })
+                .to_string(),
+            );
+            assert_eq!(
+                with_metadata.failure_reason().as_deref(),
+                Some("stale reason")
+            );
+            drop(with_metadata);
+
+            let fresh = FMError::ToolCallFailed(format!("tool failed {round}").into());
+            assert_eq!(fresh.failure_reason(), None);
+            assert_eq!(fresh.clone().failure_reason(), None);
+        }
+    }
+
+    #[test]
+    fn error_message_behaves_like_its_text() {
+        let message = ErrorMessage::from("adapter not found");
+        assert_eq!(message, "adapter not found");
+        assert_eq!(message.as_str(), "adapter not found");
+        assert_eq!(message.to_string(), "adapter not found");
+        assert_eq!(format!("{message:?}"), "\"adapter not found\"");
+        assert!(message.contains("not found"));
+        assert_eq!(String::from(message), "adapter not found");
+
+        let error = FMError::AdapterInvalidName("adapter not found".into());
+        assert_eq!(
+            format!("{error:?}"),
+            "AdapterInvalidName(\"adapter not found\")"
+        );
+        assert_eq!(error.message(), "adapter not found");
+    }
+
+    #[test]
+    fn non_json_bridge_messages_keep_their_text() {
+        let error = from_swift_message(ffi::status::UNKNOWN, "plain failure".to_owned());
+        assert_eq!(
+            error,
+            FMError::Unknown {
+                code: ffi::status::UNKNOWN,
+                message: "plain failure".into(),
+            }
+        );
+        assert_eq!(error.recovery_suggestion(), None);
     }
 
     #[test]

@@ -64,9 +64,9 @@ fn explicit_nil_schema_generates_null_fields() -> Result<(), foundation_models::
     )?;
 
     let typed_json: Value = serde_json::from_str(typed_schema.json_schema())
-        .map_err(|error| foundation_models::FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| foundation_models::FMError::DecodingFailure(error.to_string().into()))?;
     let dynamic_json: Value = serde_json::from_str(dynamic_schema.json_schema())
-        .map_err(|error| foundation_models::FMError::DecodingFailure(error.to_string()))?;
+        .map_err(|error| foundation_models::FMError::DecodingFailure(error.to_string().into()))?;
 
     for json in [&typed_json, &dynamic_json] {
         let required = json["required"].as_array().ok_or_else(|| {

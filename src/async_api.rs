@@ -237,7 +237,7 @@ impl Future for RespondFuture {
         Pin::new(&mut self.inner).poll(cx).map(|r| {
             r.map_err(|msg| FMError::Unknown {
                 code: ffi::status::UNKNOWN,
-                message: msg,
+                message: msg.into(),
             })
             .and_then(|json| decode_bridge_text_response(&json))
         })
@@ -269,11 +269,11 @@ impl Future for RespondGeneratingFuture {
         Pin::new(&mut self.inner).poll(cx).map(|r| {
             r.map_err(|msg| FMError::Unknown {
                 code: ffi::status::UNKNOWN,
-                message: msg,
+                message: msg.into(),
             })
             .and_then(|json| {
                 let response: AsyncBridgeStructuredResponse = serde_json::from_str(&json)
-                    .map_err(|e| FMError::DecodingFailure(e.to_string()))?;
+                    .map_err(|e| FMError::DecodingFailure(e.to_string().into()))?;
                 Ok(SessionResponse {
                     content: GeneratedContent::from_bridge_payload(response.content, true)?,
                     raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
@@ -306,7 +306,7 @@ impl Future for AdapterInitFuture {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(FMError::AdapterInvalidName)
+            r.map_err(|message| FMError::AdapterInvalidName(message.into()))
                 .map(|OpaquePtr(ptr)| Adapter { ptr })
         })
     }
@@ -335,10 +335,10 @@ impl Future for AdapterCompatibilityFuture {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         Pin::new(&mut self.inner).poll(cx).map(|r| {
-            r.map_err(FMError::AdapterCompatibleNotFound)
+            r.map_err(|message| FMError::AdapterCompatibleNotFound(message.into()))
                 .and_then(|json| {
                     serde_json::from_str::<Vec<String>>(&json)
-                        .map_err(|e| FMError::DecodingFailure(e.to_string()))
+                        .map_err(|e| FMError::DecodingFailure(e.to_string().into()))
                 })
         })
     }
@@ -365,7 +365,7 @@ impl Future for CompileAdapterFuture {
         Pin::new(&mut self.inner).poll(cx).map(|r| {
             r.map_err(|message| FMError::Unknown {
                 code: ffi::status::UNKNOWN,
-                message,
+                message: message.into(),
             })
         })
     }
@@ -527,8 +527,9 @@ impl AsyncAdapter {
     /// Returns an [`FMError::AdapterInvalidName`] if the adapter is not found
     /// or the name contains a NUL byte.
     pub fn from_name(name: &str) -> Result<AdapterInitFuture, FMError> {
-        let cname = CString::new(name)
-            .map_err(|e| FMError::InvalidArgument(format!("NUL byte in adapter name: {e}")))?;
+        let cname = CString::new(name).map_err(|e| {
+            FMError::InvalidArgument(format!("NUL byte in adapter name: {e}").into())
+        })?;
         let (future, ctx) = AsyncCompletion::create();
         unsafe {
             ffi::fm_adapter_create_from_name_async(cname.as_ptr(), ctx, adapter_init_async_cb);
@@ -545,8 +546,9 @@ impl AsyncAdapter {
     ///
     /// Returns an [`FMError::AdapterCompatibleNotFound`] on failure.
     pub fn compatibility(name: &str) -> Result<AdapterCompatibilityFuture, FMError> {
-        let cname = CString::new(name)
-            .map_err(|e| FMError::InvalidArgument(format!("NUL byte in adapter name: {e}")))?;
+        let cname = CString::new(name).map_err(|e| {
+            FMError::InvalidArgument(format!("NUL byte in adapter name: {e}").into())
+        })?;
         let (future, ctx) = AsyncCompletion::create();
         unsafe {
             ffi::fm_adapter_compatibility_async(cname.as_ptr(), ctx, adapter_compat_async_cb);
@@ -621,7 +623,7 @@ fn build_request_json_inner(
         "schemaJSON": schema.map(GenerationSchema::bridge_request_json),
         "includeSchemaInPrompt": include_schema_in_prompt,
     }))
-    .map_err(|e| FMError::InvalidArgument(format!("request not JSON-serializable: {e}")))?;
+    .map_err(|e| FMError::InvalidArgument(format!("request not JSON-serializable: {e}").into()))?;
     CString::new(payload)
-        .map_err(|e| FMError::InvalidArgument(format!("request JSON contains NUL: {e}")))
+        .map_err(|e| FMError::InvalidArgument(format!("request JSON contains NUL: {e}").into()))
 }

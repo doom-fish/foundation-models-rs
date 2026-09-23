@@ -47,7 +47,7 @@ fn json_string(ptr: *mut c_char) -> String {
 #[cfg(feature = "async")]
 async fn token_count_inner(model_ptr: usize, prompt: &str) -> Result<usize, FMError> {
     let prompt = CString::new(prompt).map_err(|error| {
-        FMError::InvalidArgument(format!("prompt contains an interior NUL byte: {error}"))
+        FMError::InvalidArgument(format!("prompt contains an interior NUL byte: {error}").into())
     })?;
     let (future, ctx) = AsyncCompletion::<String>::create();
     unsafe {
@@ -60,12 +60,12 @@ async fn token_count_inner(model_ptr: usize, prompt: &str) -> Result<usize, FMEr
     }
     let value = future.await.map_err(|message| FMError::Unknown {
         code: ffi::status::UNKNOWN,
-        message,
+        message: message.into(),
     })?;
     value.parse::<usize>().map_err(|error| {
-        FMError::DecodingFailure(format!(
-            "token count bridge returned invalid integer: {error}"
-        ))
+        FMError::DecodingFailure(
+            format!("token count bridge returned invalid integer: {error}").into(),
+        )
     })
 }
 
@@ -292,9 +292,9 @@ impl Adapter {
     /// Returns an [`FMError`] if the adapter file is invalid.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, FMError> {
         let path = CString::new(path.as_ref().to_string_lossy().into_owned()).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "adapter path contains an interior NUL byte: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("adapter path contains an interior NUL byte: {error}").into(),
+            )
         })?;
         let mut error: *mut c_char = ptr::null_mut();
         let ptr = unsafe { ffi::fm_adapter_create_from_file(path.as_ptr(), &mut error) };
@@ -311,7 +311,7 @@ impl Adapter {
     /// Returns an [`FMError`] if the adapter name is invalid.
     pub fn from_name(name: &str) -> Result<Self, FMError> {
         let name = CString::new(name).map_err(|error| {
-            FMError::InvalidArgument(format!("adapter name contains NUL byte: {error}"))
+            FMError::InvalidArgument(format!("adapter name contains NUL byte: {error}").into())
         })?;
         let mut error: *mut c_char = ptr::null_mut();
         let ptr = unsafe { ffi::fm_adapter_create_from_name(name.as_ptr(), &mut error) };
@@ -347,7 +347,7 @@ impl Adapter {
     /// Creator-defined metadata as a `serde_json::Value`.
     pub fn creator_defined_metadata(&self) -> Result<Value, FMError> {
         serde_json::from_str(&self.creator_defined_metadata_json())
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))
     }
 
     /// Compatible adapter identifiers for a logical adapter name.

@@ -35,9 +35,9 @@ impl GenerationSchema {
     pub fn from_json_schema(json_schema: impl Into<String>) -> Result<Self, FMError> {
         let json_schema = json_schema.into();
         let schema_c = CString::new(json_schema.as_str()).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "schema JSON contains an interior NUL byte: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("schema JSON contains an interior NUL byte: {error}").into(),
+            )
         })?;
         let mut error_ptr: *mut c_char = core::ptr::null_mut();
         let status =
@@ -68,12 +68,14 @@ impl GenerationSchema {
                 .collect::<Vec<_>>(),
         });
         let request_json = serde_json::to_string(&request).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "dynamic schema request is not JSON-serializable: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("dynamic schema request is not JSON-serializable: {error}").into(),
+            )
         })?;
         let request_c = CString::new(request_json.as_str()).map_err(|error| {
-            FMError::InvalidArgument(format!("dynamic schema JSON contains NUL byte: {error}"))
+            FMError::InvalidArgument(
+                format!("dynamic schema JSON contains NUL byte: {error}").into(),
+            )
         })?;
         let (tx, rx) = mpsc::channel();
         let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);
@@ -143,12 +145,12 @@ impl GenerationSchema {
                 .collect::<Vec<_>>(),
         });
         let request_json = serde_json::to_string(&request).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "typed schema request is not JSON-serializable: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("typed schema request is not JSON-serializable: {error}").into(),
+            )
         })?;
         let request_c = CString::new(request_json.as_str()).map_err(|error| {
-            FMError::InvalidArgument(format!("typed schema JSON contains NUL byte: {error}"))
+            FMError::InvalidArgument(format!("typed schema JSON contains NUL byte: {error}").into())
         })?;
         let (tx, rx) = mpsc::channel();
         let tx_box: Box<mpsc::Sender<Result<String, FMError>>> = Box::new(tx);

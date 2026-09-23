@@ -89,7 +89,7 @@ impl GenerationId {
             ffi::fm_generation_id_create(output, error)
         })?;
         let bridge: BridgeGenerationId = serde_json::from_str(&json)
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))?;
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
         Ok(Self::from_bridge(bridge))
     }
 
@@ -247,7 +247,7 @@ impl GeneratedContent {
         generation_id: impl Into<Option<GenerationId>>,
     ) -> Result<Self, FMError> {
         let value = serde_json::from_str(json).map_err(|error| {
-            FMError::InvalidArgument(format!("generated content JSON is invalid: {error}"))
+            FMError::InvalidArgument(format!("generated content JSON is invalid: {error}").into())
         })?;
         Ok(Self {
             value,
@@ -281,9 +281,9 @@ impl GeneratedContent {
         T: Serialize,
     {
         let value = serde_json::to_value(value).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "generated content value is not JSON-serializable: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("generated content value is not JSON-serializable: {error}").into(),
+            )
         })?;
         Ok(Self {
             value,
@@ -455,9 +455,10 @@ impl GeneratedContent {
             generation_id: self.generation_id.as_ref().map(GenerationId::to_bridge),
         })
         .map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "generated content bridge payload is not JSON-serializable: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("generated content bridge payload is not JSON-serializable: {error}")
+                    .into(),
+            )
         })
     }
 
@@ -487,7 +488,7 @@ impl GeneratedContent {
     pub fn json_string(&self) -> Result<String, FMError> {
         serde_json::to_string(&self.value).map_err(|error| FMError::Unknown {
             code: crate::ffi::status::UNKNOWN,
-            message: format!("failed to serialize generated content: {error}"),
+            message: format!("failed to serialize generated content: {error}").into(),
         })
     }
 
@@ -499,7 +500,7 @@ impl GeneratedContent {
     pub fn json_string_pretty(&self) -> Result<String, FMError> {
         serde_json::to_string_pretty(&self.value).map_err(|error| FMError::Unknown {
             code: crate::ffi::status::UNKNOWN,
-            message: format!("failed to serialize generated content: {error}"),
+            message: format!("failed to serialize generated content: {error}").into(),
         })
     }
 
@@ -513,7 +514,7 @@ impl GeneratedContent {
         T: DeserializeOwned,
     {
         serde_json::from_value(self.value.clone())
-            .map_err(|error| FMError::DecodingFailure(error.to_string()))
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))
     }
 
     /// Decode a named property from an object content value.
@@ -532,11 +533,12 @@ impl GeneratedContent {
             ));
         };
         let value = map.get(property).cloned().ok_or_else(|| {
-            FMError::DecodingFailure(format!(
-                "generated content is missing property `{property}`"
-            ))
+            FMError::DecodingFailure(
+                format!("generated content is missing property `{property}`").into(),
+            )
         })?;
-        serde_json::from_value(value).map_err(|error| FMError::DecodingFailure(error.to_string()))
+        serde_json::from_value(value)
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))
     }
 
     /// Whether Apple's structured stream reported this content as complete.
@@ -742,9 +744,9 @@ impl_numeric_conversion!(f32, f64, i8, i16, i32, i64, u8, u16, u32, u64);
 impl FromGeneratedContent for Decimal {
     fn from_generated_content(content: &GeneratedContent) -> Result<Self, FMError> {
         let json = CString::new(content.json_string()?).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "generated content JSON contains an interior NUL byte: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("generated content JSON contains an interior NUL byte: {error}").into(),
+            )
         })?;
         let value = call_string_bridge(|output, error| unsafe {
             ffi::fm_decimal_from_generated_content_json(json.as_ptr(), output, error)
@@ -756,9 +758,9 @@ impl FromGeneratedContent for Decimal {
 impl ToGeneratedContent for Decimal {
     fn to_generated_content(&self) -> Result<GeneratedContent, FMError> {
         let decimal = CString::new(self.as_str()).map_err(|error| {
-            FMError::InvalidArgument(format!(
-                "decimal string contains an interior NUL byte: {error}"
-            ))
+            FMError::InvalidArgument(
+                format!("decimal string contains an interior NUL byte: {error}").into(),
+            )
         })?;
         let json = call_string_bridge(|output, error| unsafe {
             ffi::fm_decimal_to_generated_content_json(decimal.as_ptr(), output, error)
@@ -887,7 +889,9 @@ where
     fn generation_schema() -> Result<GenerationSchema, FMError> {
         let item_schema: Value = serde_json::from_str(T::generation_schema()?.json_schema())
             .map_err(|error| {
-                FMError::InvalidArgument(format!("element schema is not valid JSON: {error}"))
+                FMError::InvalidArgument(
+                    format!("element schema is not valid JSON: {error}").into(),
+                )
             })?;
         Ok(GenerationSchema::from_json_schema_unchecked(
             serde_json::json!({ "type": "array", "items": item_schema }).to_string(),

@@ -63,7 +63,7 @@ impl Prompt {
 
     pub(crate) fn to_bridge_json(&self) -> Result<String, FMError> {
         serde_json::to_string(&self.to_bridge_value()).map_err(|error| {
-            FMError::InvalidArgument(format!("prompt is not JSON-serializable: {error}"))
+            FMError::InvalidArgument(format!("prompt is not JSON-serializable: {error}").into())
         })
     }
 }
@@ -141,7 +141,9 @@ impl Instructions {
 
     pub(crate) fn to_bridge_json(&self) -> Result<String, FMError> {
         serde_json::to_string(&self.to_bridge_value()).map_err(|error| {
-            FMError::InvalidArgument(format!("instructions are not JSON-serializable: {error}"))
+            FMError::InvalidArgument(
+                format!("instructions are not JSON-serializable: {error}").into(),
+            )
         })
     }
 }
@@ -292,9 +294,9 @@ impl ResponseFormat {
             name,
             schema: GenerationSchema::from_json_schema_unchecked(
                 serde_json::to_string(schema).map_err(|error| {
-                    FMError::InvalidArgument(format!(
-                        "response format schema is not valid JSON: {error}"
-                    ))
+                    FMError::InvalidArgument(
+                        format!("response format schema is not valid JSON: {error}").into(),
+                    )
                 })?,
             ),
         })
