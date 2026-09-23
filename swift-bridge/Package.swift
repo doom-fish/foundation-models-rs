@@ -18,7 +18,6 @@ let package = Package(
     targets: [
         .target(
             name: "FoundationModelsBridge",
-            path: "Sources/FoundationModelsBridge",
-            publicHeadersPath: "include")
+            path: "Sources/FoundationModelsBridge")
     ]
 )
