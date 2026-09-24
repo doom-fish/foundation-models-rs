@@ -34,7 +34,7 @@ use crate::transcript::Transcript;
 /// use foundation_models::LanguageModelSession;
 ///
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let session = LanguageModelSession::new();
+/// let session = LanguageModelSession::new()?;
 /// let answer = session.respond("Name three Norse gods.")?;
 /// println!("{answer}");
 /// # Ok(())
@@ -64,36 +64,20 @@ impl LanguageModelSession {
 
     /// Create a session with the model's default behaviour.
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `FoundationModels` is not available on this OS. Check
-    /// [`crate::SystemLanguageModel::is_available`] first if you need to
-    /// handle that gracefully.
-    #[must_use]
-    pub fn new() -> Self {
-        Self::try_new(None).expect("FoundationModels is not available on this OS")
+    /// Returns an [`FMError`] if `FoundationModels` is not available on this OS.
+    pub fn new() -> Result<Self, FMError> {
+        Self::builder().build()
     }
 
     /// Create a session with custom system instructions ("system prompt").
     ///
-    /// # Panics
+    /// # Errors
     ///
-    /// Panics if `FoundationModels` is not available.
-    #[must_use]
-    pub fn with_instructions(instructions: &str) -> Self {
-        Self::try_new(Some(instructions)).expect("FoundationModels is not available on this OS")
-    }
-
-    /// Fallible constructor. Returns `None` when `FoundationModels` is not
-    /// available (OS too old, model not enabled, etc.).
-    #[must_use]
-    pub fn try_new(instructions: Option<&str>) -> Option<Self> {
-        let builder = Self::builder();
-        let builder = match instructions {
-            Some(instructions) => builder.instructions(instructions).ok()?,
-            None => builder,
-        };
-        builder.build().ok()
+    /// Returns an [`FMError`] if `FoundationModels` is not available.
+    pub fn with_instructions(instructions: &str) -> Result<Self, FMError> {
+        Self::builder().instructions(instructions)?.build()
     }
 
     /// Send a prompt and block until the full response is available.
@@ -136,30 +120,6 @@ impl LanguageModelSession {
             .into_owned();
         unsafe { ffi::fm_string_free(p) };
         s
-    }
-
-    /// Log feedback on the most recent response for diagnostic /
-    /// fine-tuning purposes. `sentiment`:
-    /// `1` positive, `0` neutral, `-1` negative.
-    pub fn log_feedback(
-        &self,
-        sentiment: i32,
-        description: Option<&str>,
-    ) -> Result<Vec<u8>, FMError> {
-        let mut request = FeedbackAttachmentRequest::new();
-        request.sentiment = Some(match sentiment {
-            1 => FeedbackSentiment::Positive,
-            -1 => FeedbackSentiment::Negative,
-            _ => FeedbackSentiment::Neutral,
-        });
-        request.issues = description
-            .map(|explanation| FeedbackIssue {
-                category: FeedbackIssueCategory::Unhelpful,
-                explanation: Some(explanation.to_owned()),
-            })
-            .into_iter()
-            .collect();
-        self.log_feedback_attachment(request)
     }
 
     /// Prompt-engineered JSON-shape response.
@@ -1046,12 +1006,6 @@ fn prompt_to_plain_text(prompt: &Prompt) -> Option<String> {
     Some(text)
 }
 
-impl Default for LanguageModelSession {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Drop for LanguageModelSession {
     fn drop(&mut self) {
         if !self.ptr.is_null() {
@@ -1616,6 +1570,6 @@ mod tests {
             return;
         }
         assert!(result.is_ok(), "{result:?}");
-        assert!(LanguageModelSession::try_new(Some("Answer\0briefly")).is_some());
+        assert!(LanguageModelSession::with_instructions("Answer\0briefly").is_ok());
     }
 }

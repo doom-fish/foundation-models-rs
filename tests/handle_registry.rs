@@ -90,7 +90,7 @@ fn structured_responses_and_streams_return_the_registry_to_its_baseline() {
     }
     let _registry = exclusive();
     let baseline = counts();
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new().expect("session");
     let schema = reply_schema();
     for _ in 0..3 {
         let response = session
@@ -141,7 +141,7 @@ fn prompts_keep_their_generation_ids_alive_until_swift_has_read_them() {
     }
     let _registry = exclusive();
     let baseline = counts();
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new().expect("session");
     let mut prompt = Prompt::text("Name the bird in this record in one word: ");
     prompt.push_structured("Record", identified(json!({ "bird": "heron" })));
     let reply = session.respond_prompt(prompt);
@@ -196,7 +196,7 @@ mod async_registry {
         }
         let _registry = exclusive();
         let baseline = counts();
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new().expect("session");
         let schema = reply_schema();
         let response = pollster::block_on(
             AsyncSession::new(&session)

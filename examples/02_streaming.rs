@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new()?;
     session.stream(
         "Write a short haiku about a Rust crab named Ferris.",
         |event| match event {

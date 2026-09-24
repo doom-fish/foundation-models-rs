@@ -33,7 +33,7 @@
 //!     return Ok(());
 //! }
 //! pollster::block_on(async {
-//!     let session = LanguageModelSession::new();
+//!     let session = LanguageModelSession::new()?;
 //!     let async_session = AsyncSession::new(&session);
 //!     let reply = async_session.respond("Name three Norse gods.")?.await?;
 //!     println!("{}", reply.content);
@@ -315,7 +315,7 @@ impl Future for CompileAdapterFuture {
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// if !SystemLanguageModel::is_available() { return Ok(()); }
 /// pollster::block_on(async {
-///     let session = LanguageModelSession::new();
+///     let session = LanguageModelSession::new()?;
 ///     let reply = AsyncSession::new(&session).respond("Hi!")?.await?;
 ///     println!("{}", reply.content);
 ///     Ok::<(), Box<dyn std::error::Error>>(())

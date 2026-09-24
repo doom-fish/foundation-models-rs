@@ -27,7 +27,7 @@ mod async_api_tests {
             eprintln!("SKIP: model unavailable");
             return;
         }
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new().expect("session");
         let result = pollster::block_on(async {
             AsyncSession::new(&session)
                 .respond("Say exactly the word: hello")?
@@ -50,7 +50,7 @@ mod async_api_tests {
             eprintln!("SKIP: model unavailable");
             return;
         }
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new().expect("session");
         let result = pollster::block_on(async {
             AsyncSession::new(&session)
                 .respond_with_options("Say yes.", GenerationOptions::new())?
@@ -76,7 +76,7 @@ mod async_api_tests {
         );
         let gs = GenerationSchema::from_dynamic(schema, []).expect("schema build");
 
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new().expect("session");
         let result = pollster::block_on(async {
             AsyncSession::new(&session)
                 .respond_generating("Reply with one word.", &gs, true, GenerationOptions::new())?

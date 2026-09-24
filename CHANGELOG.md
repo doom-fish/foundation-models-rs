@@ -22,7 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Tool handlers ran on Swift's cooperative thread pool, so a blocking handler or a nested sync `respond()` could starve it. They now run on a dispatch queue.
 - `SamplingMode::TopK(0)` and top-p thresholds outside `0.0..=1.0` reached the SDK; they are now rejected with `FMError::InvalidArgument`.
 - `LanguageModelSession::with_instructions` panicked with "FoundationModels is not available" when the instructions contained a NUL byte. Instructions now go through the JSON bridge, so NUL bytes are passed through.
-- `LanguageModelSession::log_feedback` discarded the feedback attachment data.
 - The refusal-explanation thunks read their C strings inside the detached Task; they now copy them first.
 - The Swift bridge declared macOS 13 although FoundationModels is linked strongly and the README requires macOS 26. It now deploys to macOS 26; the 26.4 APIs keep their runtime checks.
 - `cargo clippy -- -D warnings` failed on the current toolchain (`borrow_as_ptr`).
@@ -33,17 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **Breaking:** `FMError` variants carry an `ErrorMessage` (text plus metadata) instead of a `String`. It derefs to `str`, displays like the old string and converts from `String` and `&str`, so construct errors with `"...".into()` or `format!(...).into()`.
-- **Breaking:** `LanguageModelSession::log_feedback` returns `Result<Vec<u8>, FMError>` with the attachment data.
 - **Breaking:** `ffi`: `fm_session_create_ex` takes a release callback for the tool context, which Swift always consumes; the respond, stream, compile, refusal-explanation and async exports return a task handle to cancel with `fm_task_cancel` and release with `fm_object_release`; the async adapter exports use status-carrying callbacks (`FmObjectCallback`, `FmRespondCallback`).
+- **Breaking:** `LanguageModelSession::new` and `LanguageModelSession::with_instructions` return `Result<Self, FMError>` instead of panicking when FoundationModels is unavailable. `LanguageModelSession::try_new` and the panicking `Default` impl are removed.
 - **Breaking:** `GeneratedContent::generation_id` returns `Option<&GenerationId>`, and `generation_id_handle` is removed; use `GenerationId::best_effort_string` or `Display` for the text. `GenerationId` compares, hashes and debug-prints by the Swift value it owns.
+- **Breaking:** `LanguageModelSession::log_feedback` is removed. It discarded the attachment data, filed any sentiment other than `1` and `-1` as neutral, and filed every description as an "unhelpful" issue; call `log_feedback_attachment` with an explicit `FeedbackSentiment` and `FeedbackIssue`s.
+- **Breaking:** the `backgroundassets` feature, its `foundation_models::backgroundassets` re-export and the optional `backgroundassets` dependency are removed. The module only re-exported the sibling crate; its one SDK link, `Adapter.isCompatible(_ assetPack:)`, was deprecated in macOS 26.4 and removed in 27.0. Depend on `backgroundassets` directly.
 - **Breaking:** `ffi`: `fm_generation_id_create` returns a `u64` token and a description through out-pointers, `fm_refusal_explanation_json` and `fm_refusal_explanation_stream` take a `u64` token, and `fm_generation_id_retain`, `fm_generation_id_release`, `fm_refusal_retain` and `fm_refusal_release` manage the handles. Bridge payloads carry numeric tokens, text stream snapshots no longer include `rawContent`, and structured stream snapshots carry no generation IDs. The respond, stream and token-count exports report request decoding errors through the callback and return a null task.
 - `SystemLanguageModel::token_count` and `ConfiguredSystemLanguageModel::token_count` accept any `ToPrompt` (a `&str` still works).
 - Dropping a `LanguageModelSession` while a future is pending is supported; the future completes.
-- doom-fish-utils is a regular dependency with the requirement `>=0.4.1, <0.5`, the `backgroundassets` requirement is `>=0.4, <0.5`, and `rust-version` is 1.82.
-
-### Deprecated
-
-- The `backgroundassets` feature and its `foundation_models::backgroundassets` module. It only re-exports the sibling crate; its one SDK link, `Adapter.isCompatible(_ assetPack:)`, was deprecated in macOS 26.4 and removed in 27.0. Depend on `backgroundassets` directly.
+- doom-fish-utils is a regular dependency with the requirement `>=0.4.1, <0.5`, and `rust-version` is 1.82.
 
 ### Added
 

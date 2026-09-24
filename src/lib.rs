@@ -23,7 +23,7 @@
 //!     return Ok(());
 //! }
 //!
-//! let session = LanguageModelSession::new();
+//! let session = LanguageModelSession::new()?;
 //! let reply = session.respond("Name three Norse gods.")?;
 //! println!("{reply}");
 //! # Ok(())
@@ -37,7 +37,7 @@
 //! use std::io::Write;
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let session = LanguageModelSession::new();
+//! let session = LanguageModelSession::new()?;
 //! session.stream("Tell me a haiku about Rust.", |event| match event {
 //!     StreamEvent::Chunk(s) => {
 //!         print!("{s}");
@@ -70,16 +70,6 @@
     clippy::unnecessary_map_or,
     clippy::use_self
 )]
-
-#[cfg(feature = "backgroundassets")]
-#[cfg_attr(docsrs, doc(cfg(feature = "backgroundassets")))]
-#[deprecated(
-    since = "0.12.0",
-    note = "FoundationModels no longer links BackgroundAssets; depend on the `backgroundassets` crate directly"
-)]
-pub mod backgroundassets {
-    pub use ::backgroundassets::*;
-}
 
 pub mod content;
 pub mod error;

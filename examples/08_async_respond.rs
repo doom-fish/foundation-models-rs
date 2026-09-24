@@ -21,7 +21,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     pollster::block_on(async {
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new()?;
         let async_session = AsyncSession::new(&session);
 
         // --- respond(to:) ---

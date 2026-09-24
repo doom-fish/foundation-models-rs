@@ -10,7 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new()?;
 
     let prompt = "Suggest a creative name for a cat.";
 

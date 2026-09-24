@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new()?;
     let reply = session.respond("In one short sentence, what is Rust?")?;
     println!("{reply}");
     Ok(())

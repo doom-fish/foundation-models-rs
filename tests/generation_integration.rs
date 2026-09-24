@@ -89,7 +89,7 @@ fn explicit_nil_schema_generates_null_fields() -> Result<(), foundation_models::
         assert!(has_null, "schema should allow explicit nulls: {json}");
     }
 
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new().expect("session");
     let content = session
         .respond_generated_with(
             "Return JSON with title set to Alpha and subtitle set to null. Do not omit subtitle.",

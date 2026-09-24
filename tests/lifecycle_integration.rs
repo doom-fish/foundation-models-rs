@@ -44,7 +44,7 @@ fn a_panicking_stream_callback_cancels_generation() {
     if !model_available() {
         return;
     }
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new().expect("session");
     let result = session.stream("Write a long story about a lighthouse keeper.", |event| {
         assert!(
             !matches!(event, StreamEvent::Chunk(_)),
@@ -66,7 +66,7 @@ fn concatenated_stream_chunks_equal_the_final_reply() {
     if !model_available() {
         return;
     }
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new().expect("session");
     let received = Arc::new(Mutex::new(String::new()));
     let sink = Arc::clone(&received);
     session
@@ -115,7 +115,7 @@ mod async_lifecycle {
         if !model_available() {
             return;
         }
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new().expect("session");
         let pending = AsyncSession::new(&session)
             .respond("Write a very long essay about the history of timekeeping.")
             .expect("request");

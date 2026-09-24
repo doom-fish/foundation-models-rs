@@ -50,7 +50,7 @@ use foundation_models::async_api::AsyncSession;
 if !SystemLanguageModel::is_available() { return Ok(()); }
 #[cfg(feature = "async")]
 pollster::block_on(async {
-    let session = LanguageModelSession::new();
+    let session = LanguageModelSession::new()?;
     let reply = AsyncSession::new(&session).respond("Name three Norse gods.")?.await?;
     println!("{}", reply.content);
     Ok::<(), Box<dyn std::error::Error>>(())
@@ -90,7 +90,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session = LanguageModelSession::with_instructions(
         "Answer in a single concise sentence.",
-    );
+    )?;
     let reply = session.respond("Why is the sky blue?")?;
     println!("{reply}");
     Ok(())
@@ -157,7 +157,7 @@ let schema = GenerationSchema::from_dynamic(
     [],
 )?;
 
-let session = LanguageModelSession::new();
+let session = LanguageModelSession::new()?;
 let response = session.respond_generated(
     "Return JSON for one classic science-fiction movie.",
     &schema,
@@ -205,7 +205,7 @@ cargo run --example 07_schema_surface --features macos_26_0
 ## Notes
 
 - Swift-only compile-time macros such as `@Generable` and `@Guide` are exposed as Rust runtime traits/builders (`Generable`, `GenerationGuide`, `DynamicGenerationSchema`).
-- The optional `backgroundassets` feature is deprecated. It only re-exports the sibling `backgroundassets` crate, and its one SDK link, `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)`, was deprecated in macOS 26.4 and removed in 27.0. Depend on `backgroundassets` directly.
+- There is no BackgroundAssets integration: the former `backgroundassets` feature only re-exported the sibling crate, and its one SDK link, `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)`, was deprecated in macOS 26.4 and removed in 27.0. Depend on `backgroundassets` directly.
 - Text streams deliver `StreamEvent::Chunk` deltas cut from the full snapshot on UTF-8 boundaries, so concatenating them reproduces the reply even when a grapheme cluster grows across snapshots (ZWJ emoji, skin tones, combining marks). If the model rewrites text it already streamed, `StreamEvent::Replace` carries the whole new text.
 - `GeneratedContent::generation_id()` returns the attached `GenerationId`. It owns the Swift `GenerationID` it names, which the bridge releases when the last clone is dropped; `best_effort_string()` and `Display` give its description. A `Refusal` taken from an error owns its Swift refusal the same way.
 - Typed generation/schema/adapter error metadata plus refusal helpers are available through `FMError::{generation_error_context, adapter_asset_error_context, schema_error_context, recovery_suggestion, failure_reason, refusal, tool_call_error}`.

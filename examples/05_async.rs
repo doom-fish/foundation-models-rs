@@ -16,7 +16,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let reply = tokio::task::spawn_blocking(|| {
-        let session = LanguageModelSession::new();
+        let session = LanguageModelSession::new()?;
         session.respond("Say hi from async Rust.")
     })
     .await??;

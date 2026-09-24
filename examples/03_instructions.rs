@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let session = LanguageModelSession::with_instructions(
         "You are a terse Norse skald. Answer in under 10 words, in alliterative verse.",
-    );
+    )?;
 
     for question in ["What is the sea?", "What is fire?", "What is courage?"] {
         println!("Q: {question}");
