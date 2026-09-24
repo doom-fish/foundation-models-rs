@@ -59,9 +59,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
     println!(
         "generation id: {}",
-        decimal_content
-            .generation_id()
-            .unwrap_or_else(|| generation_id.best_effort_string())
+        decimal_content.generation_id().unwrap_or(&generation_id)
     );
 
     let tool = Tool::generable(

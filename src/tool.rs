@@ -12,7 +12,7 @@ use serde_json::json;
 use crate::content::{FromGeneratedContent, GeneratedContent};
 use crate::error::FMError;
 use crate::ffi;
-use crate::prompt::{Prompt, ToPrompt, ToolDefinition};
+use crate::prompt::{Prompt, Segment, ToPrompt, ToolDefinition};
 use crate::schema::{Generable, GenerationSchema};
 
 fn swift_dup_string(value: &str) -> *mut c_char {
@@ -188,6 +188,16 @@ impl ToolOutput {
             },
         )
     }
+
+    fn hand_generation_ids_to_swift(&self) {
+        for segment in self.prompt.segments() {
+            if let Segment::Structure(segment) = segment {
+                if let Some(generation_id) = segment.content.generation_id() {
+                    unsafe { ffi::fm_generation_id_retain(generation_id.token()) };
+                }
+            }
+        }
+    }
 }
 
 impl From<String> for ToolOutput {
@@ -289,11 +299,13 @@ pub(crate) unsafe extern "C" fn tool_callback_trampoline(
         let tool_name = unsafe { CStr::from_ptr(tool_name) }.to_string_lossy();
         let arguments_json = unsafe { CStr::from_ptr(arguments_json) }.to_string_lossy();
         let arguments = GeneratedContent::from_json_str(&arguments_json)?;
-        registry.invoke(&tool_name, arguments)?.to_bridge_json()
+        let output = registry.invoke(&tool_name, arguments)?;
+        let output_json = output.to_bridge_json()?;
+        Ok((output, output_json))
     });
 
     let (status, output, message) = match outcome {
-        Some(Ok(output_json)) => (ffi::status::OK, Some(output_json), None),
+        Some(Ok(output)) => (ffi::status::OK, Some(output), None),
         Some(Err(error)) => (error.code(), None, Some(error.message().to_owned())),
         None => (
             ffi::status::TOOL_CALL_FAILED,
@@ -301,8 +313,9 @@ pub(crate) unsafe extern "C" fn tool_callback_trampoline(
             Some("tool callback panicked".to_owned()),
         ),
     };
-    if let (Some(output), false) = (output, output_json_out.is_null()) {
-        unsafe { *output_json_out = swift_dup_string(&output) };
+    if let (Some((output, output_json)), false) = (output, output_json_out.is_null()) {
+        unsafe { *output_json_out = swift_dup_string(&output_json) };
+        output.hand_generation_ids_to_swift();
     }
     if let (Some(message), false) = (message, error_out.is_null()) {
         unsafe { *error_out = swift_dup_string(&message) };

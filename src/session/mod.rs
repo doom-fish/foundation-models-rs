@@ -266,7 +266,7 @@ impl LanguageModelSession {
         let schema_c = CString::new(schema)
             .map_err(|e| FMError::InvalidArgument(format!("schema NUL byte: {e}").into()))?;
         let opts = options.validate()?.to_ffi();
-        wait_for_bridge_text(|context, callback| unsafe {
+        wait_for_bridge(|context, callback| unsafe {
             ffi::fm_session_respond_with_schema(
                 self.ptr,
                 prompt_c.as_ptr(),
@@ -417,10 +417,9 @@ impl LanguageModelSession {
     {
         let prompt = prompt.to_prompt()?;
         let payload = respond_request_json(&prompt, options, None, true)?;
-        let payload = wait_for_bridge_text(|context, callback| unsafe {
+        wait_for_bridge(|context, callback| unsafe {
             ffi::fm_session_respond_request_json(self.ptr, payload.as_ptr(), context, callback)
-        })?;
-        decode_bridge_text_response(&payload)
+        })
     }
 
     /// Generate structured content using an explicit schema.
@@ -464,15 +463,8 @@ impl LanguageModelSession {
         let prompt = prompt.to_prompt()?;
         let payload =
             respond_request_json(&prompt, options, Some(schema), include_schema_in_prompt)?;
-        let payload = wait_for_bridge_text(|context, callback| unsafe {
+        wait_for_bridge(|context, callback| unsafe {
             ffi::fm_session_respond_request_json(self.ptr, payload.as_ptr(), context, callback)
-        })?;
-        let response: BridgeStructuredResponse = serde_json::from_str(&payload)
-            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
-        Ok(SessionResponse {
-            content: GeneratedContent::from_bridge_payload(response.content, true)?,
-            raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
-            transcript: Transcript::from_json_str(&response.transcript_json)?,
         })
     }
 
@@ -963,16 +955,38 @@ pub(crate) fn respond_request_json(
     })
 }
 
-pub(crate) fn decode_bridge_text_response(
-    payload: &str,
-) -> Result<SessionResponse<String>, FMError> {
-    let response: BridgeTextResponse = serde_json::from_str(payload)
-        .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
-    Ok(SessionResponse {
-        content: response.content,
-        raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
-        transcript: Transcript::from_json_str(&response.transcript_json)?,
-    })
+pub(crate) trait BridgePayload: Sized + Send + 'static {
+    fn decode(payload: String) -> Result<Self, FMError>;
+}
+
+impl BridgePayload for String {
+    fn decode(payload: String) -> Result<Self, FMError> {
+        Ok(payload)
+    }
+}
+
+impl BridgePayload for SessionResponse<String> {
+    fn decode(payload: String) -> Result<Self, FMError> {
+        let response: BridgeTextResponse = serde_json::from_str(&payload)
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
+        Ok(Self {
+            content: response.content,
+            raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
+            transcript: Transcript::from_json_str(&response.transcript_json)?,
+        })
+    }
+}
+
+impl BridgePayload for SessionResponse<GeneratedContent> {
+    fn decode(payload: String) -> Result<Self, FMError> {
+        let response: BridgeStructuredResponse = serde_json::from_str(&payload)
+            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
+        Ok(Self {
+            content: GeneratedContent::from_bridge_payload(response.content, true)?,
+            raw_content: GeneratedContent::from_bridge_payload(response.raw_content, true)?,
+            transcript: Transcript::from_json_str(&response.transcript_json)?,
+        })
+    }
 }
 
 fn bridge_dropped(what: &str) -> FMError {
@@ -989,22 +1003,16 @@ fn callback_panicked() -> FMError {
     }
 }
 
-pub(crate) fn wait_for_bridge_text<F>(invoke: F) -> Result<String, FMError>
+pub(crate) fn wait_for_bridge<T, F>(invoke: F) -> Result<T, FMError>
 where
+    T: BridgePayload,
     F: FnOnce(*mut c_void, ffi::FmRespondCallback) -> *mut c_void,
 {
-    let (tx, rx) = mpsc::channel::<Result<String, FMError>>();
+    let (tx, rx) = mpsc::channel::<Result<T, FMError>>();
     let context = Box::into_raw(Box::new(tx)).cast::<c_void>();
-    let _task = SwiftTask::from_raw(invoke(context, respond_trampoline));
+    let _task = SwiftTask::from_raw(invoke(context, respond_trampoline::<T>));
     rx.recv()
         .unwrap_or_else(|_| Err(bridge_dropped("response")))
-}
-
-pub(crate) fn request_text_response_with<F>(invoke: F) -> Result<SessionResponse<String>, FMError>
-where
-    F: FnOnce(*mut c_void, ffi::FmRespondCallback) -> *mut c_void,
-{
-    decode_bridge_text_response(&wait_for_bridge_text(invoke)?)
 }
 
 pub(crate) fn run_text_stream_with<F, C>(invoke: F, on_chunk: C) -> Result<(), FMError>
@@ -1077,23 +1085,23 @@ pub enum StreamEvent<'a> {
 // ---------- internal callback plumbing ----------
 
 // SAFETY: `context` is a `Box<mpsc::Sender<...>>` raw pointer created by
-// `wait_for_bridge_text`. Swift calls this callback exactly once, so there is
+// `wait_for_bridge`. Swift calls this callback exactly once, so there is
 // no double-free risk. `response` and `error` are heap-allocated C strings
 // that this callback takes ownership of and frees.
-unsafe extern "C" fn respond_trampoline(
+unsafe extern "C" fn respond_trampoline<T: BridgePayload>(
     context: *mut c_void,
     response: *mut c_char,
     error: *mut c_char,
     status: i32,
 ) {
-    let result = catch_user_panic_result("respond callback", || unsafe {
-        bridge_text_result(response, error, status)
+    let result = catch_user_panic_result("respond callback", || {
+        unsafe { bridge_text_result(response, error, status) }.and_then(T::decode)
     })
     .unwrap_or_else(|| Err(bridge_dropped("response")));
     if context.is_null() {
         return;
     }
-    let tx = unsafe { Box::from_raw(context.cast::<mpsc::Sender<Result<String, FMError>>>()) };
+    let tx = unsafe { Box::from_raw(context.cast::<mpsc::Sender<Result<T, FMError>>>()) };
     let _ = tx.send(result);
 }
 

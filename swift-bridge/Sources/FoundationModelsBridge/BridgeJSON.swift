@@ -5,7 +5,7 @@ import FoundationModels
 #endif
 
 struct BridgeGenerationID: Codable {
-    var token: String
+    var token: UInt64
     var description: String
 }
 
@@ -15,7 +15,7 @@ struct BridgeGeneratedContent: Codable {
 }
 
 struct BridgeRefusal: Codable {
-    var token: String
+    var token: UInt64
 }
 
 struct BridgeSegment: Codable {
@@ -73,7 +73,6 @@ struct BridgeStructuredResponse: Encodable {
 struct BridgeTextStreamSnapshot: Encodable {
     let kind: String = "text"
     let content: String
-    let rawContent: BridgeGeneratedContent
 }
 
 struct BridgeStructuredStreamSnapshot: Encodable {
@@ -135,51 +134,6 @@ struct BridgeFeedbackRequest: Codable {
 
 #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
 @available(macOS 26.0, *)
-final class GenerationIDRegistry {
-    static let shared = GenerationIDRegistry()
-
-    private let lock = NSLock()
-    private var generationIDs: [String: GenerationID] = [:]
-
-    func register(_ generationID: GenerationID) -> BridgeGenerationID {
-        lock.lock()
-        defer { lock.unlock() }
-        let token = UUID().uuidString
-        generationIDs[token] = generationID
-        return BridgeGenerationID(token: token, description: String(describing: generationID))
-    }
-
-    func resolve(_ bridgeGenerationID: BridgeGenerationID?) -> GenerationID? {
-        guard let bridgeGenerationID else { return nil }
-        lock.lock()
-        defer { lock.unlock() }
-        return generationIDs[bridgeGenerationID.token]
-    }
-}
-
-@available(macOS 26.0, *)
-final class RefusalRegistry {
-    static let shared = RefusalRegistry()
-
-    private let lock = NSLock()
-    private var refusals: [String: LanguageModelSession.GenerationError.Refusal] = [:]
-
-    func register(_ refusal: LanguageModelSession.GenerationError.Refusal) -> BridgeRefusal {
-        lock.lock()
-        defer { lock.unlock() }
-        let token = UUID().uuidString
-        refusals[token] = refusal
-        return BridgeRefusal(token: token)
-    }
-
-    func resolve(_ bridgeRefusal: BridgeRefusal) -> LanguageModelSession.GenerationError.Refusal? {
-        lock.lock()
-        defer { lock.unlock() }
-        return refusals[bridgeRefusal.token]
-    }
-}
-
-@available(macOS 26.0, *)
 func decodeBridge<T: Decodable>(_ json: String, as type: T.Type = T.self) throws -> T {
     guard let data = json.data(using: .utf8) else {
         throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
@@ -207,30 +161,25 @@ func encodeErrorPayload(_ payload: BridgeErrorPayload) -> String {
 }
 
 @available(macOS 26.0, *)
-func bridgeGenerationID(from generationID: GenerationID?) -> BridgeGenerationID? {
-    generationID.map(GenerationIDRegistry.shared.register)
-}
-
-@available(macOS 26.0, *)
-func bridgeGeneratedContent(_ content: GeneratedContent) -> BridgeGeneratedContent {
+func bridgeGeneratedContent(_ content: GeneratedContent, lease: BridgeLease) -> BridgeGeneratedContent {
     BridgeGeneratedContent(
         json: content.jsonString,
-        generationID: bridgeGenerationID(from: content.id)
+        generationID: content.id.map(lease.lend)
     )
 }
 
 @available(macOS 26.0, *)
 func buildGeneratedContent(from bridge: BridgeGeneratedContent) throws -> GeneratedContent {
     let content = try GeneratedContent(json: bridge.json)
-    if let generationID = GenerationIDRegistry.shared.resolve(bridge.generationID) {
-        return GeneratedContent(content, id: generationID)
+    guard let bridgeGenerationID = bridge.generationID else {
+        return content
     }
-    return content
-}
-
-@available(macOS 26.0, *)
-func bridgeRefusal(_ refusal: LanguageModelSession.GenerationError.Refusal) -> BridgeRefusal {
-    RefusalRegistry.shared.register(refusal)
+    guard let generationID = BridgeHandles.generationIDs.value(for: bridgeGenerationID.token) else {
+        throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
+            NSLocalizedDescriptionKey: "generated content refers to a generation ID that is no longer alive"
+        ])
+    }
+    return GeneratedContent(content, id: generationID)
 }
 
 @available(macOS 26.0, *)

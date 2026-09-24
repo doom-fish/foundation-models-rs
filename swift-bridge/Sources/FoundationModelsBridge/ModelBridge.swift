@@ -198,6 +198,51 @@ let FM_TOKEN_COUNT_TOOLS: Int32 = 2
 let FM_TOKEN_COUNT_SCHEMA: Int32 = 3
 let FM_TOKEN_COUNT_TRANSCRIPT: Int32 = 4
 
+#if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
+@available(macOS 26.4, *)
+enum TokenCountInput: Sendable {
+    case prompt(Prompt)
+    case instructions(Instructions)
+    case tools([any Tool])
+    case schema(GenerationSchema)
+    case transcript(Transcript)
+
+    init(kind: Int32, json: String) throws {
+        switch kind {
+        case FM_TOKEN_COUNT_PROMPT:
+            self = .prompt(try buildPrompt(from: decodeBridge(json, as: BridgePrompt.self)))
+        case FM_TOKEN_COUNT_INSTRUCTIONS:
+            self = .instructions(try buildInstructions(from: decodeBridge(json, as: BridgeInstructions.self)))
+        case FM_TOKEN_COUNT_TOOLS:
+            self = .tools(try buildDeclaredTools(specsJSON: json))
+        case FM_TOKEN_COUNT_SCHEMA:
+            self = .schema(try decodeGenerationSchema(from: json))
+        case FM_TOKEN_COUNT_TRANSCRIPT:
+            self = .transcript(try decodeTranscript(from: json))
+        default:
+            throw NSError(domain: "fm-bridge", code: Int(FM_INVALID_ARGUMENT), userInfo: [
+                NSLocalizedDescriptionKey: "unknown token count input kind \(kind)"
+            ])
+        }
+    }
+
+    func count(with model: SystemLanguageModel) async throws -> Int {
+        switch self {
+        case .prompt(let prompt):
+            return try await model.tokenCount(for: prompt)
+        case .instructions(let instructions):
+            return try await model.tokenCount(for: instructions)
+        case .tools(let tools):
+            return try await model.tokenCount(for: tools)
+        case .schema(let schema):
+            return try await model.tokenCount(for: schema)
+        case .transcript(let transcript):
+            return try await model.tokenCount(for: transcript)
+        }
+    }
+}
+#endif
+
 @_cdecl("fm_system_model_token_count_json_async")
 public func fm_system_model_token_count_json_async(
     _ modelPtr: UnsafeMutableRawPointer?,
@@ -214,26 +259,18 @@ public func fm_system_model_token_count_json_async(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.4, *) {
         let model = systemModel(from: modelPtr)
-        let json = String(cString: inputJSON)
+        let input: TokenCountInput
+        do {
+            input = try TokenCountInput(kind: kind, json: String(cString: inputJSON))
+        } catch {
+            let (code, message) = mapError(error)
+            callback(context, nil, ffiString(message), code)
+            return nil
+        }
         return startBridgeTask {
             do {
                 try Task.checkCancellation()
-                let count: Int
-                switch kind {
-                case FM_TOKEN_COUNT_PROMPT:
-                    count = try await model.tokenCount(for: buildPrompt(from: decodeBridge(json, as: BridgePrompt.self)))
-                case FM_TOKEN_COUNT_INSTRUCTIONS:
-                    count = try await model.tokenCount(for: buildInstructions(from: decodeBridge(json, as: BridgeInstructions.self)))
-                case FM_TOKEN_COUNT_TOOLS:
-                    count = try await model.tokenCount(for: buildDeclaredTools(specsJSON: json))
-                case FM_TOKEN_COUNT_SCHEMA:
-                    count = try await model.tokenCount(for: decodeGenerationSchema(from: json))
-                case FM_TOKEN_COUNT_TRANSCRIPT:
-                    count = try await model.tokenCount(for: decodeTranscript(from: json))
-                default:
-                    callback(context, nil, ffiString("unknown token count input kind \(kind)"), FM_INVALID_ARGUMENT)
-                    return
-                }
+                let count = try await input.count(with: model)
                 callback(context, ffiString(String(count)), nil, FM_OK)
             } catch {
                 let (code, message) = mapError(error)

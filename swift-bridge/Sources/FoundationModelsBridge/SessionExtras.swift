@@ -40,6 +40,22 @@ func feedbackIssueCategory(from rawValue: String) -> LanguageModelFeedback.Issue
         return .unhelpful
     }
 }
+
+@available(macOS 26.0, *)
+struct PreparedResponseRequest: Sendable {
+    let prompt: Prompt
+    let options: GenerationOptions
+    let schema: GenerationSchema?
+    let includeSchemaInPrompt: Bool
+
+    init(json: String) throws {
+        let request = try decodeBridge(json, as: BridgeResponseRequest.self)
+        prompt = try buildPrompt(from: request.prompt)
+        options = try buildOptions(from: request.options)
+        schema = try request.schemaJSON.map { try decodeGenerationSchema(from: $0) }
+        includeSchemaInPrompt = request.includeSchemaInPrompt ?? true
+    }
+}
 #endif
 
 @_cdecl("fm_session_create_ex")
@@ -132,40 +148,45 @@ public func fm_session_respond_request_json(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         let box = sessionBox(from: sessionPtr)
-        let requestJSONString = String(cString: requestJSON)
+        let request: PreparedResponseRequest
+        do {
+            request = try PreparedResponseRequest(json: String(cString: requestJSON))
+        } catch {
+            let (code, message) = mapError(error)
+            callback(context, nil, ffiString(message), code)
+            return nil
+        }
         return startBridgeTask(gate: box.gate) {
+            let lease = BridgeLease()
+            defer { lease.end() }
             do {
                 try Task.checkCancellation()
-                let request = try decodeBridge(requestJSONString, as: BridgeResponseRequest.self)
-                let prompt = try buildPrompt(from: request.prompt)
-                let options = try buildOptions(from: request.options)
-                if let schemaJSON = request.schemaJSON {
-                    let schema = try decodeGenerationSchema(from: schemaJSON)
+                if let schema = request.schema {
                     let response = try await box.session.respond(
-                        to: prompt,
+                        to: request.prompt,
                         schema: schema,
-                        includeSchemaInPrompt: request.includeSchemaInPrompt ?? true,
-                        options: options
+                        includeSchemaInPrompt: request.includeSchemaInPrompt,
+                        options: request.options
                     )
                     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
                     let payload = BridgeStructuredResponse(
-                        content: bridgeGeneratedContent(response.content),
-                        rawContent: bridgeGeneratedContent(response.rawContent),
+                        content: bridgeGeneratedContent(response.content, lease: lease),
+                        rawContent: bridgeGeneratedContent(response.rawContent, lease: lease),
                         transcriptJSON: transcriptJSON
                     )
                     callback(context, ffiString(try encodeBridge(payload)), nil, FM_OK)
                 } else {
-                    let response = try await box.session.respond(to: prompt, options: options)
+                    let response = try await box.session.respond(to: request.prompt, options: request.options)
                     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
                     let payload = BridgeTextResponse(
                         content: response.content,
-                        rawContent: bridgeGeneratedContent(response.rawContent),
+                        rawContent: bridgeGeneratedContent(response.rawContent, lease: lease),
                         transcriptJSON: transcriptJSON
                     )
                     callback(context, ffiString(try encodeBridge(payload)), nil, FM_OK)
                 }
             } catch {
-                let (code, message) = mapError(error)
+                let (code, message) = mapError(error, lease: lease)
                 callback(context, nil, ffiString(message), code)
             }
         }
@@ -190,28 +211,31 @@ public func fm_session_stream_request_json(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         let box = sessionBox(from: sessionPtr)
-        let requestJSONString = String(cString: requestJSON)
+        let request: PreparedResponseRequest
+        do {
+            request = try PreparedResponseRequest(json: String(cString: requestJSON))
+        } catch {
+            let (code, message) = mapError(error)
+            callback(context, ffiString(message), true, code)
+            return nil
+        }
         return startBridgeTask(gate: box.gate) {
             do {
                 try Task.checkCancellation()
-                let request = try decodeBridge(requestJSONString, as: BridgeResponseRequest.self)
-                let prompt = try buildPrompt(from: request.prompt)
-                let options = try buildOptions(from: request.options)
                 let entriesBefore = box.session.transcript.count
-                if let schemaJSON = request.schemaJSON {
-                    let schema = try decodeGenerationSchema(from: schemaJSON)
+                if let schema = request.schema {
                     let stream = box.session.streamResponse(
-                        to: prompt,
+                        to: request.prompt,
                         schema: schema,
-                        includeSchemaInPrompt: request.includeSchemaInPrompt ?? true,
-                        options: options
+                        includeSchemaInPrompt: request.includeSchemaInPrompt,
+                        options: request.options
                     )
                     let cancelled: Bool
                     do {
                         for try await snapshot in stream {
                             let payload = BridgeStructuredStreamSnapshot(
-                                content: bridgeGeneratedContent(snapshot.content),
-                                rawContent: bridgeGeneratedContent(snapshot.rawContent),
+                                content: BridgeGeneratedContent(json: snapshot.content.jsonString, generationID: nil),
+                                rawContent: BridgeGeneratedContent(json: snapshot.rawContent.jsonString, generationID: nil),
                                 isComplete: snapshot.content.isComplete
                             )
                             callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
@@ -220,7 +244,9 @@ public func fm_session_stream_request_json(
                         finishStream(cancelled: cancelled, context: context, callback: callback)
                     } catch {
                         cancelled = error is CancellationError || Task.isCancelled
-                        let (code, message) = mapError(error)
+                        let lease = BridgeLease()
+                        defer { lease.end() }
+                        let (code, message) = mapError(error, lease: lease)
                         callback(context, ffiString(message), true, code)
                     }
                     if cancelled {
@@ -228,7 +254,7 @@ public func fm_session_stream_request_json(
                     }
                 } else {
                     let cancelled = await streamTextResponse(
-                        box.session.streamResponse(to: prompt, options: options),
+                        box.session.streamResponse(to: request.prompt, options: request.options),
                         context: context,
                         callback: callback
                     )

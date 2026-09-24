@@ -2,8 +2,10 @@
 
 use core::ffi::c_char;
 use core::fmt;
+use core::hash::{Hash, Hasher};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -11,6 +13,7 @@ use serde_json::{Map, Number, Value};
 
 use crate::error::FMError;
 use crate::ffi;
+use crate::handle::SwiftHandle;
 use crate::schema::{DynamicGenerationSchema, Generable, GenerationSchema};
 
 /// Rust analogue of FoundationModels' `ConvertibleFromGeneratedContent`.
@@ -27,7 +30,7 @@ pub trait ToGeneratedContent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BridgeGenerationId {
-    pub(crate) token: String,
+    pub(crate) token: u64,
     pub(crate) description: String,
 }
 
@@ -72,9 +75,11 @@ where
 }
 
 /// Rust wrapper for FoundationModels' opaque `GenerationID`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct GenerationId {
-    token: String,
+#[derive(Clone)]
+pub struct GenerationId(Arc<GenerationIdInner>);
+
+struct GenerationIdInner {
+    handle: SwiftHandle,
     description: String,
 }
 
@@ -85,32 +90,81 @@ impl GenerationId {
     ///
     /// Returns an [`FMError`] if the Swift bridge cannot create the identifier.
     pub fn new() -> Result<Self, FMError> {
-        let json = call_string_bridge(|output, error| unsafe {
-            ffi::fm_generation_id_create(output, error)
-        })?;
-        let bridge: BridgeGenerationId = serde_json::from_str(&json)
-            .map_err(|error| FMError::DecodingFailure(error.to_string().into()))?;
-        Ok(Self::from_bridge(bridge))
+        let mut token = 0_u64;
+        let mut description: *mut c_char = core::ptr::null_mut();
+        let mut error: *mut c_char = core::ptr::null_mut();
+        let status = unsafe {
+            ffi::fm_generation_id_create(&raw mut token, &raw mut description, &raw mut error)
+        };
+        let description = owned_string(description);
+        if status != ffi::status::OK {
+            return Err(crate::error::from_swift(status, error));
+        }
+        if !error.is_null() {
+            unsafe { ffi::fm_string_free(error) };
+        }
+        Ok(Self(Arc::new(GenerationIdInner {
+            handle: SwiftHandle::owned(token, ffi::fm_generation_id_release),
+            description,
+        })))
     }
 
     /// Best-effort string representation of the opaque identifier.
     #[must_use]
     pub fn best_effort_string(&self) -> &str {
-        &self.description
+        &self.0.description
+    }
+
+    pub(crate) fn token(&self) -> u64 {
+        self.0.handle.token()
     }
 
     pub(crate) fn to_bridge(&self) -> BridgeGenerationId {
         BridgeGenerationId {
-            token: self.token.clone(),
-            description: self.description.clone(),
+            token: self.token(),
+            description: self.0.description.clone(),
         }
     }
 
-    pub(crate) fn from_bridge(bridge: BridgeGenerationId) -> Self {
-        Self {
-            token: bridge.token,
+    pub(crate) fn adopt(bridge: BridgeGenerationId) -> Result<Self, FMError> {
+        let handle = SwiftHandle::retained(
+            bridge.token,
+            ffi::fm_generation_id_retain,
+            ffi::fm_generation_id_release,
+        )
+        .ok_or_else(|| {
+            FMError::DecodingFailure(
+                "generated content refers to a generation ID the Swift bridge no longer holds"
+                    .into(),
+            )
+        })?;
+        Ok(Self(Arc::new(GenerationIdInner {
+            handle,
             description: bridge.description,
-        }
+        })))
+    }
+}
+
+impl PartialEq for GenerationId {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.handle == other.0.handle
+    }
+}
+
+impl Eq for GenerationId {}
+
+impl Hash for GenerationId {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.0.handle.hash(state);
+    }
+}
+
+impl fmt::Debug for GenerationId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GenerationId")
+            .field("token", &self.token())
+            .field("description", &self.0.description)
+            .finish()
     }
 }
 
@@ -441,10 +495,8 @@ impl GeneratedContent {
         payload: BridgeGeneratedContent,
         is_complete: bool,
     ) -> Result<Self, FMError> {
-        let mut content = Self::from_json_str_with_id(
-            &payload.json,
-            payload.generation_id.map(GenerationId::from_bridge),
-        )?;
+        let generation_id = payload.generation_id.map(GenerationId::adopt).transpose()?;
+        let mut content = Self::from_json_str_with_id(&payload.json, generation_id)?;
         content.is_complete = is_complete;
         Ok(content)
     }
@@ -549,15 +601,7 @@ impl GeneratedContent {
 
     /// Apple's opaque generation identifier, if one was attached.
     #[must_use]
-    pub fn generation_id(&self) -> Option<&str> {
-        self.generation_id
-            .as_ref()
-            .map(GenerationId::best_effort_string)
-    }
-
-    /// Borrow the typed generation identifier handle, if one was attached.
-    #[must_use]
-    pub fn generation_id_handle(&self) -> Option<&GenerationId> {
+    pub fn generation_id(&self) -> Option<&GenerationId> {
         self.generation_id.as_ref()
     }
 

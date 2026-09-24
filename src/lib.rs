@@ -85,6 +85,7 @@ pub mod content;
 pub mod error;
 pub mod ffi;
 pub mod generation;
+mod handle;
 pub mod model;
 pub mod prompt;
 pub mod schema;

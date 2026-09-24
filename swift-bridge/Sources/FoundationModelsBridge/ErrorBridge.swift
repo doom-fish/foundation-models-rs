@@ -14,7 +14,10 @@ func writeErrorOut(
 }
 
 @available(macOS 26.0, *)
-func generationErrorPayload(_ error: LanguageModelSession.GenerationError) -> BridgeErrorPayload {
+func generationErrorPayload(
+    _ error: LanguageModelSession.GenerationError,
+    lease: BridgeLease?
+) -> BridgeErrorPayload {
     let message = error.localizedDescription
     let recoverySuggestion = error.recoverySuggestion
     let failureReason = error.failureReason
@@ -44,7 +47,7 @@ func generationErrorPayload(_ error: LanguageModelSession.GenerationError) -> Br
             recoverySuggestion: recoverySuggestion,
             failureReason: failureReason,
             generationErrorContext: BridgeErrorContext(debugDescription: context.debugDescription),
-            refusal: bridgeRefusal(refusal),
+            refusal: lease?.lend(refusal),
             toolCallError: nil,
             adapterAssetErrorContext: nil,
             schemaErrorContext: nil
@@ -142,11 +145,14 @@ func assetErrorPayload(_ error: SystemLanguageModel.Adapter.AssetError) -> Bridg
 }
 
 @available(macOS 26.0, *)
-func encodedTextResponse(_ response: LanguageModelSession.Response<String>) throws -> String {
+func encodedTextResponse(
+    _ response: LanguageModelSession.Response<String>,
+    lease: BridgeLease
+) throws -> String {
     let transcriptJSON = try encodeTranscriptJSON(entries: response.transcriptEntries)
     let payload = BridgeTextResponse(
         content: response.content,
-        rawContent: bridgeGeneratedContent(response.rawContent),
+        rawContent: bridgeGeneratedContent(response.rawContent, lease: lease),
         transcriptJSON: transcriptJSON
     )
     return try encodeBridge(payload)
@@ -197,10 +203,7 @@ func streamTextResponse(
 ) async -> Bool {
     do {
         for try await snapshot in stream {
-            let payload = BridgeTextStreamSnapshot(
-                content: snapshot.content,
-                rawContent: bridgeGeneratedContent(snapshot.rawContent)
-            )
+            let payload = BridgeTextStreamSnapshot(content: snapshot.content)
             callback(context, ffiString(try encodeBridge(payload)), false, FM_OK)
         }
         let cancelled = Task.isCancelled
@@ -208,7 +211,9 @@ func streamTextResponse(
         return cancelled
     } catch {
         let cancelled = error is CancellationError || Task.isCancelled
-        let (code, message) = mapError(error)
+        let lease = BridgeLease()
+        defer { lease.end() }
+        let (code, message) = mapError(error, lease: lease)
         callback(context, ffiString(message), true, code)
         return cancelled
     }
@@ -217,13 +222,19 @@ func streamTextResponse(
 
 @_cdecl("fm_generation_id_create")
 public func fm_generation_id_create(
-    _ outputOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+    _ tokenOut: UnsafeMutablePointer<UInt64>?,
+    _ descriptionOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
     _ errorOut: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
 ) -> Int32 {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let handle = GenerationIDRegistry.shared.register(GenerationID())
-        outputOut?.pointee = ffiString((try? encodeBridge(handle)) ?? "")
+        guard let tokenOut else {
+            writeErrorOut(errorOut, "generation ID token out-pointer is null")
+            return FM_INVALID_ARGUMENT
+        }
+        let generationID = GenerationID()
+        tokenOut.pointee = BridgeHandles.generationIDs.insert(generationID)
+        descriptionOut?.pointee = ffiString(String(describing: generationID))
         return FM_OK
     }
     #endif
@@ -286,7 +297,7 @@ public func fm_decimal_from_generated_content_json(
 
 @_cdecl("fm_refusal_explanation_json")
 public func fm_refusal_explanation_json(
-    _ refusalToken: UnsafePointer<CChar>,
+    _ refusalToken: UInt64,
     _ context: UnsafeMutableRawPointer?,
     _ callback: @convention(c) (
         UnsafeMutableRawPointer?,
@@ -297,18 +308,19 @@ public func fm_refusal_explanation_json(
 ) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let bridgeRefusal = BridgeRefusal(token: String(cString: refusalToken))
-        guard let refusal = RefusalRegistry.shared.resolve(bridgeRefusal) else {
+        guard let refusal = BridgeHandles.refusals.value(for: refusalToken) else {
             callback(context, nil, ffiString("unknown refusal token"), FM_INVALID_ARGUMENT)
             return nil
         }
         return startBridgeTask {
+            let lease = BridgeLease()
+            defer { lease.end() }
             do {
                 try Task.checkCancellation()
                 let response = try await refusal.explanation
-                callback(context, ffiString(try encodedTextResponse(response)), nil, FM_OK)
+                callback(context, ffiString(try encodedTextResponse(response, lease: lease)), nil, FM_OK)
             } catch {
-                let (code, message) = mapError(error)
+                let (code, message) = mapError(error, lease: lease)
                 callback(context, nil, ffiString(message), code)
             }
         }
@@ -333,6 +345,8 @@ public func fm_refusal_explanation_from_transcript_json(
     if #available(macOS 26.0, *) {
         let transcriptJSONString = String(cString: transcriptJSON)
         return startBridgeTask {
+            let lease = BridgeLease()
+            defer { lease.end() }
             do {
                 try Task.checkCancellation()
                 let transcript = try decodeTranscript(from: transcriptJSONString)
@@ -340,9 +354,9 @@ public func fm_refusal_explanation_from_transcript_json(
                     transcriptEntries: Array(transcript)
                 )
                 let response = try await refusal.explanation
-                callback(context, ffiString(try encodedTextResponse(response)), nil, FM_OK)
+                callback(context, ffiString(try encodedTextResponse(response, lease: lease)), nil, FM_OK)
             } catch {
-                let (code, message) = mapError(error)
+                let (code, message) = mapError(error, lease: lease)
                 callback(context, nil, ffiString(message), code)
             }
         }
@@ -354,7 +368,7 @@ public func fm_refusal_explanation_from_transcript_json(
 
 @_cdecl("fm_refusal_explanation_stream")
 public func fm_refusal_explanation_stream(
-    _ refusalToken: UnsafePointer<CChar>,
+    _ refusalToken: UInt64,
     _ context: UnsafeMutableRawPointer?,
     _ callback: @convention(c) (
         UnsafeMutableRawPointer?,
@@ -365,8 +379,7 @@ public func fm_refusal_explanation_stream(
 ) -> UnsafeMutableRawPointer? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let bridgeRefusal = BridgeRefusal(token: String(cString: refusalToken))
-        guard let refusal = RefusalRegistry.shared.resolve(bridgeRefusal) else {
+        guard let refusal = BridgeHandles.refusals.value(for: refusalToken) else {
             callback(context, ffiString("unknown refusal token"), true, FM_INVALID_ARGUMENT)
             return nil
         }

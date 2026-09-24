@@ -4,10 +4,12 @@ use core::ffi::c_char;
 use core::fmt;
 use core::ops::Deref;
 use std::ffi::{CStr, CString};
+use std::sync::Arc;
 
 use serde::Deserialize;
 
 use crate::ffi;
+use crate::handle::SwiftHandle;
 use crate::prompt::ToolDefinition;
 use crate::schema::GenerationSchema;
 use crate::session::{self, SessionResponse, StreamEvent};
@@ -112,8 +114,21 @@ impl ToolCallError {
 /// Typed refusal helper returned by generation-refusal errors.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Refusal {
-    token: Option<String>,
-    transcript: Option<Transcript>,
+    source: RefusalSource,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum RefusalSource {
+    Swift(Arc<SwiftHandle>),
+    Transcript(Transcript),
+}
+
+fn transcript_json_c_string(transcript: &Transcript) -> Result<CString, FMError> {
+    CString::new(transcript.to_json_string()?).map_err(|error| {
+        FMError::InvalidArgument(
+            format!("refusal transcript JSON contains an interior NUL byte: {error}").into(),
+        )
+    })
 }
 
 impl Refusal {
@@ -121,22 +136,27 @@ impl Refusal {
     #[must_use]
     pub fn new(entries: impl IntoIterator<Item = Entry>) -> Self {
         Self {
-            token: None,
-            transcript: Some(Transcript::from_entries(entries.into_iter().collect())),
+            source: RefusalSource::Transcript(Transcript::from_entries(
+                entries.into_iter().collect(),
+            )),
         }
     }
 
-    pub(crate) fn from_token(token: impl Into<String>) -> Self {
-        Self {
-            token: Some(token.into()),
-            transcript: None,
-        }
+    fn adopt(token: u64) -> Option<Self> {
+        SwiftHandle::retained(token, ffi::fm_refusal_retain, ffi::fm_refusal_release).map(
+            |handle| Self {
+                source: RefusalSource::Swift(Arc::new(handle)),
+            },
+        )
     }
 
     /// Borrow the local transcript, if this refusal was constructed from entries.
     #[must_use]
     pub fn transcript(&self) -> Option<&Transcript> {
-        self.transcript.as_ref()
+        match &self.source {
+            RefusalSource::Transcript(transcript) => Some(transcript),
+            RefusalSource::Swift(_) => None,
+        }
     }
 
     /// Resolve the refusal's explanation response.
@@ -145,32 +165,24 @@ impl Refusal {
     ///
     /// Returns an [`FMError`] if the Swift bridge rejects the refusal helper.
     pub fn explanation(&self) -> Result<SessionResponse<String>, FMError> {
-        if let Some(token) = &self.token {
-            let token = CString::new(token.as_str()).map_err(|error| {
-                FMError::InvalidArgument(
-                    format!("refusal token contains an interior NUL byte: {error}").into(),
-                )
-            })?;
-            return session::request_text_response_with(|context, callback| unsafe {
-                ffi::fm_refusal_explanation_json(token.as_ptr(), context, callback)
-            });
+        match &self.source {
+            RefusalSource::Swift(handle) => {
+                let token = handle.token();
+                session::wait_for_bridge(|context, callback| unsafe {
+                    ffi::fm_refusal_explanation_json(token, context, callback)
+                })
+            }
+            RefusalSource::Transcript(transcript) => {
+                let transcript_json = transcript_json_c_string(transcript)?;
+                session::wait_for_bridge(|context, callback| unsafe {
+                    ffi::fm_refusal_explanation_from_transcript_json(
+                        transcript_json.as_ptr(),
+                        context,
+                        callback,
+                    )
+                })
+            }
         }
-
-        let transcript = self.transcript.as_ref().ok_or_else(|| {
-            FMError::InvalidArgument("refusal does not contain any transcript state".into())
-        })?;
-        let transcript_json = CString::new(transcript.to_json_string()?).map_err(|error| {
-            FMError::InvalidArgument(
-                format!("refusal transcript JSON contains an interior NUL byte: {error}").into(),
-            )
-        })?;
-        session::request_text_response_with(|context, callback| unsafe {
-            ffi::fm_refusal_explanation_from_transcript_json(
-                transcript_json.as_ptr(),
-                context,
-                callback,
-            )
-        })
     }
 
     /// Stream the refusal's explanation text.
@@ -182,38 +194,30 @@ impl Refusal {
     where
         F: FnMut(StreamEvent<'_>) + Send + 'static,
     {
-        if let Some(token) = &self.token {
-            let token = CString::new(token.as_str()).map_err(|error| {
-                FMError::InvalidArgument(
-                    format!("refusal token contains an interior NUL byte: {error}").into(),
+        match &self.source {
+            RefusalSource::Swift(handle) => {
+                let token = handle.token();
+                session::run_text_stream_with(
+                    |context, callback| unsafe {
+                        ffi::fm_refusal_explanation_stream(token, context, callback)
+                    },
+                    on_chunk,
                 )
-            })?;
-            return session::run_text_stream_with(
-                |context, callback| unsafe {
-                    ffi::fm_refusal_explanation_stream(token.as_ptr(), context, callback)
-                },
-                on_chunk,
-            );
+            }
+            RefusalSource::Transcript(transcript) => {
+                let transcript_json = transcript_json_c_string(transcript)?;
+                session::run_text_stream_with(
+                    |context, callback| unsafe {
+                        ffi::fm_refusal_explanation_stream_from_transcript_json(
+                            transcript_json.as_ptr(),
+                            context,
+                            callback,
+                        )
+                    },
+                    on_chunk,
+                )
+            }
         }
-
-        let transcript = self.transcript.as_ref().ok_or_else(|| {
-            FMError::InvalidArgument("refusal does not contain any transcript state".into())
-        })?;
-        let transcript_json = CString::new(transcript.to_json_string()?).map_err(|error| {
-            FMError::InvalidArgument(
-                format!("refusal transcript JSON contains an interior NUL byte: {error}").into(),
-            )
-        })?;
-        session::run_text_stream_with(
-            |context, callback| unsafe {
-                ffi::fm_refusal_explanation_stream_from_transcript_json(
-                    transcript_json.as_ptr(),
-                    context,
-                    callback,
-                )
-            },
-            on_chunk,
-        )
     }
 }
 
@@ -236,7 +240,7 @@ struct BridgeErrorContext {
 
 #[derive(Debug, Deserialize)]
 struct BridgeRefusal {
-    token: String,
+    token: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -289,7 +293,7 @@ impl BridgeErrorPayload {
                 .map(|context| SchemaErrorContext::new(context.debug_description)),
             refusal: self
                 .refusal
-                .map(|refusal| Refusal::from_token(refusal.token)),
+                .and_then(|refusal| Refusal::adopt(refusal.token)),
             tool_call_error: self.tool_call_error.map(|error| {
                 ToolCallError::new(
                     ToolDefinition::new(
@@ -676,8 +680,7 @@ mod tests {
                 "message": "request refused",
                 "recoverySuggestion": "Try a safer prompt",
                 "failureReason": "Safety policy",
-                "generationErrorContext": { "debugDescription": "guardrail refusal" },
-                "refusal": { "token": "refusal-token" }
+                "generationErrorContext": { "debugDescription": "guardrail refusal" }
             })),
         );
         let cloned = error.clone();
@@ -696,7 +699,6 @@ mod tests {
                 .debug_description(),
             "guardrail refusal"
         );
-        assert_eq!(cloned.refusal(), Some(Refusal::from_token("refusal-token")));
     }
 
     #[test]
@@ -705,8 +707,7 @@ mod tests {
             ffi::status::REFUSAL,
             json!({
                 "message": "request refused",
-                "recoverySuggestion": "Try a safer prompt",
-                "refusal": { "token": "first-token" }
+                "recoverySuggestion": "Try a safer prompt"
             })
             .to_string(),
         );
@@ -717,12 +718,10 @@ mod tests {
 
         assert_eq!(refused, plain);
         assert_eq!(plain.recovery_suggestion(), None);
-        assert_eq!(plain.refusal(), None);
         assert_eq!(
             refused.recovery_suggestion().as_deref(),
             Some("Try a safer prompt")
         );
-        assert_eq!(refused.refusal(), Some(Refusal::from_token("first-token")));
     }
 
     #[test]

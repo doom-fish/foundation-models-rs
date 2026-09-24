@@ -45,7 +45,7 @@ Audited against:
 | `GenerationSchema.SchemaError.Context / recoverySuggestion` | ✅ implemented | Exposed via `SchemaErrorContext` and `FMError::{schema_error_context, recovery_suggestion}`. |
 | `BackgroundAssets` companion integration | ⚠️ deprecated re-export | There is no BackgroundAssets interop in this crate. The optional `backgroundassets` Cargo feature only re-exports the sibling crate, now as a deprecated module; depend on `backgroundassets` directly. The only SDK link, `SystemLanguageModel.Adapter.isCompatible(_ assetPack:)`, was deprecated in 26.4, is internal in the 26.5 interface and is gone from 27.0. |
 | `SystemLanguageModel.Adapter.AssetError.Context / recoverySuggestion` | ✅ implemented | Exposed via `AdapterAssetErrorContext` and `FMError::{adapter_asset_error_context, recovery_suggestion}`. |
-| `GenerationID` | ✅ implemented | Exposed as `GenerationId`; `GeneratedContent::{generation_id_handle, with_generation_id}` preserve opaque IDs across the bridge. |
+| `GenerationID` | ✅ implemented | Exposed as `GenerationId`, an owned handle to the Swift value that is released when its last clone drops; `GeneratedContent::{generation_id, with_generation_id}` preserve opaque IDs across the bridge. |
 
 ## Not covered
 

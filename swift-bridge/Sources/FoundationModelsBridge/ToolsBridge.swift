@@ -102,9 +102,15 @@ final class RustTool: Tool, @unchecked Sendable {
             ])
         }
 
-        let toolOutput = try decodeBridge(outputJSON, as: BridgeToolOutput.self)
-        return try buildPrompt(from: toolOutput.prompt)
+        return try buildToolOutputPrompt(from: outputJSON)
     }
+}
+
+@available(macOS 26.0, *)
+func buildToolOutputPrompt(from outputJSON: String) throws -> Prompt {
+    let toolOutput = try decodeBridge(outputJSON, as: BridgeToolOutput.self)
+    defer { toolOutput.prompt.generationIDTokens.forEach(BridgeHandles.generationIDs.release) }
+    return try buildPrompt(from: toolOutput.prompt)
 }
 
 @available(macOS 26.0, *)

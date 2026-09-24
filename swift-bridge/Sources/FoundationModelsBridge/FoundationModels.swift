@@ -205,7 +205,7 @@ func buildOptions(
 
 #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
 @available(macOS 26.0, *)
-func mapError(_ error: Error) -> (Int32, String) {
+func mapError(_ error: Error, lease: BridgeLease? = nil) -> (Int32, String) {
     func plainPayload(_ message: String) -> String {
         encodeErrorPayload(BridgeErrorPayload(
             message: message,
@@ -222,23 +222,23 @@ func mapError(_ error: Error) -> (Int32, String) {
     if let lmError = error as? LanguageModelSession.GenerationError {
         switch lmError {
         case .guardrailViolation:
-            return (FM_GUARDRAIL_VIOLATION, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_GUARDRAIL_VIOLATION, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .exceededContextWindowSize:
-            return (FM_CONTEXT_WINDOW_EXCEEDED, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_CONTEXT_WINDOW_EXCEEDED, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .unsupportedLanguageOrLocale:
-            return (FM_UNSUPPORTED_LANGUAGE, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_UNSUPPORTED_LANGUAGE, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .assetsUnavailable:
-            return (FM_ASSETS_UNAVAILABLE, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_ASSETS_UNAVAILABLE, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .rateLimited:
-            return (FM_RATE_LIMITED, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_RATE_LIMITED, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .decodingFailure:
-            return (FM_DECODING_FAILURE, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_DECODING_FAILURE, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .refusal:
-            return (FM_REFUSAL, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_REFUSAL, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .concurrentRequests:
-            return (FM_CONCURRENT_REQUESTS, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_CONCURRENT_REQUESTS, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         case .unsupportedGuide:
-            return (FM_UNSUPPORTED_GUIDE, encodeErrorPayload(generationErrorPayload(lmError)))
+            return (FM_UNSUPPORTED_GUIDE, encodeErrorPayload(generationErrorPayload(lmError, lease: lease)))
         @unknown default:
             return (FM_UNKNOWN, plainPayload(lmError.localizedDescription))
         }
@@ -351,6 +351,8 @@ public func fm_session_respond_with_schema(
             let dyn = try buildDynamicSchema(from: schemaParsed, name: "Root")
             let schema = try GenerationSchema(root: dyn, dependencies: [])
             return startBridgeTask(gate: box.gate) {
+                let lease = BridgeLease()
+                defer { lease.end() }
                 do {
                     try Task.checkCancellation()
                     let response = try await box.session.respond(
@@ -362,7 +364,7 @@ public func fm_session_respond_with_schema(
                     let cstr = ffiString(response.content.jsonString)
                     callback(context, cstr, nil, FM_OK)
                 } catch {
-                    let (code, message) = mapError(error)
+                    let (code, message) = mapError(error, lease: lease)
                     let cstr = ffiString(message)
                     callback(context, nil, cstr, code)
                 }

@@ -9,14 +9,14 @@ use std::ptr;
 use serde_json::Value;
 
 #[cfg(feature = "async")]
-use crate::async_api::PendingText;
+use crate::async_api::PendingBridge;
 use crate::error::{from_swift, FMError, Unavailability};
 use crate::ffi;
 #[cfg(feature = "async")]
 use crate::prompt::{ToInstructions, ToPrompt};
 #[cfg(feature = "async")]
 use crate::schema::GenerationSchema;
-use crate::session::wait_for_bridge_text;
+use crate::session::wait_for_bridge;
 #[cfg(feature = "async")]
 use crate::tool::{tool_specs_json, Tool};
 #[cfg(feature = "async")]
@@ -60,11 +60,11 @@ fn start_token_count(
     model: *mut c_void,
     kind: i32,
     input_json: String,
-) -> Result<PendingText, FMError> {
+) -> Result<PendingBridge<String>, FMError> {
     let input_json = CString::new(input_json).map_err(|error| {
         FMError::InvalidArgument(format!("token count input contains a NUL byte: {error}").into())
     })?;
-    Ok(PendingText::start(|context, callback| unsafe {
+    Ok(PendingBridge::start(|context, callback| unsafe {
         ffi::fm_system_model_token_count_json_async(
             model,
             kind,
@@ -76,7 +76,7 @@ fn start_token_count(
 }
 
 #[cfg(feature = "async")]
-async fn finish_token_count(pending: PendingText) -> Result<usize, FMError> {
+async fn finish_token_count(pending: PendingBridge<String>) -> Result<usize, FMError> {
     pending.await?.parse::<usize>().map_err(|error| {
         FMError::DecodingFailure(
             format!("token count bridge returned invalid integer: {error}").into(),
@@ -180,10 +180,11 @@ impl SystemLanguageModel {
     #[cfg(feature = "async")]
     #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     pub async fn token_count(prompt: impl ToPrompt) -> Result<usize, FMError> {
+        let prompt = prompt.to_prompt()?;
         let pending = start_token_count(
             ptr::null_mut(),
             ffi::token_count_input::PROMPT,
-            prompt.to_prompt()?.to_bridge_json()?,
+            prompt.to_bridge_json()?,
         )?;
         finish_token_count(pending).await
     }
@@ -236,10 +237,11 @@ impl ConfiguredSystemLanguageModel {
     #[cfg_attr(docsrs, doc(cfg(feature = "async")))]
     #[allow(clippy::future_not_send)]
     pub async fn token_count(&self, prompt: impl ToPrompt) -> Result<usize, FMError> {
+        let prompt = prompt.to_prompt()?;
         let pending = start_token_count(
             self.ptr,
             ffi::token_count_input::PROMPT,
-            prompt.to_prompt()?.to_bridge_json()?,
+            prompt.to_bridge_json()?,
         )?;
         finish_token_count(pending).await
     }
@@ -251,10 +253,11 @@ impl ConfiguredSystemLanguageModel {
         &self,
         instructions: impl ToInstructions,
     ) -> Result<usize, FMError> {
+        let instructions = instructions.to_instructions()?;
         let pending = start_token_count(
             self.ptr,
             ffi::token_count_input::INSTRUCTIONS,
-            instructions.to_instructions()?.to_bridge_json()?,
+            instructions.to_bridge_json()?,
         )?;
         finish_token_count(pending).await
     }
@@ -402,7 +405,7 @@ impl Adapter {
     ///
     /// Returns an [`FMError`] if compilation fails.
     pub fn compile(&self) -> Result<(), FMError> {
-        wait_for_bridge_text(|context, callback| unsafe {
+        wait_for_bridge::<String, _>(|context, callback| unsafe {
             ffi::fm_adapter_compile(self.ptr, context, callback)
         })
         .map(drop)

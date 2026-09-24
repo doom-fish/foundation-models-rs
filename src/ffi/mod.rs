@@ -168,9 +168,14 @@ extern "C" {
     );
 
     pub fn fm_generation_id_create(
-        output_out: *mut *mut c_char,
+        token_out: *mut u64,
+        description_out: *mut *mut c_char,
         error_out: *mut *mut c_char,
     ) -> i32;
+    pub fn fm_generation_id_retain(token: u64) -> bool;
+    pub fn fm_generation_id_release(token: u64);
+    pub fn fm_refusal_retain(token: u64) -> bool;
+    pub fn fm_refusal_release(token: u64);
     pub fn fm_decimal_to_generated_content_json(
         decimal_string: *const c_char,
         output_out: *mut *mut c_char,
@@ -182,7 +187,7 @@ extern "C" {
         error_out: *mut *mut c_char,
     ) -> i32;
     pub fn fm_refusal_explanation_json(
-        refusal_token: *const c_char,
+        refusal_token: u64,
         context: *mut c_void,
         callback: FmRespondCallback,
     ) -> *mut c_void;
@@ -192,7 +197,7 @@ extern "C" {
         callback: FmRespondCallback,
     ) -> *mut c_void;
     pub fn fm_refusal_explanation_stream(
-        refusal_token: *const c_char,
+        refusal_token: u64,
         context: *mut c_void,
         callback: FmStreamCallback,
     ) -> *mut c_void;

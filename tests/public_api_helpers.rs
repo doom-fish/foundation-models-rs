@@ -113,11 +113,14 @@ fn generation_id_attaches_to_generated_content() -> Result<(), FMError> {
     )?;
 
     assert_eq!(content.kind(), GeneratedContentKind::String("hello".into()));
-    assert_eq!(content.generation_id_handle(), Some(&generation_id));
+    assert_eq!(content.generation_id(), Some(&generation_id));
     assert_eq!(
-        content.generation_id(),
+        content
+            .generation_id()
+            .map(GenerationId::best_effort_string),
         Some(generation_id.best_effort_string())
     );
+    assert_ne!(content.generation_id(), Some(&GenerationId::new()?));
     Ok(())
 }
 

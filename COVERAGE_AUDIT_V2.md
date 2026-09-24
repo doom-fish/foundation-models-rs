@@ -57,7 +57,7 @@ EXEMPT covers Swift-only builder DSL surfaces, hidden compiler shims, and standa
 | `Swift.Array.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L182` | `Vec<T>: FromGeneratedContent/ToGeneratedContent/Generable` |
 | `GeneratedContent` | Struct | `FoundationModels.swiftinterface:L199` | `content::GeneratedContent` |
 | `GeneratedContent.generationSchema` | Var | `FoundationModels.swiftinterface:L200` | `Generable for GeneratedContent` |
-| `GeneratedContent.id` | Var | `FoundationModels.swiftinterface:L203` | `GeneratedContent::{generation_id_handle, generation_id}` |
+| `GeneratedContent.id` | Var | `FoundationModels.swiftinterface:L203` | `GeneratedContent::generation_id` |
 | `GeneratedContent.init(_ content: FoundationModels.GeneratedContent)` | Init | `FoundationModels.swiftinterface:L204` | `GeneratedContent::{from_value, TryFrom<Value>}` |
 | `GeneratedContent.generatedContent` | Var | `FoundationModels.swiftinterface:L205` | `ToGeneratedContent for GeneratedContent` |
 | `GeneratedContent.init(properties: Swift.KeyValuePairs<Swift.String, any FoundationModels.ConvertibleToGeneratedContent>, id: FoundationModels.GenerationID? = nil)` | Init | `FoundationModels.swiftinterface:L209` | `GeneratedContent::{from_properties, from_properties_with_id}` |

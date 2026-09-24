@@ -27,12 +27,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Swift bridge declared macOS 13 although FoundationModels is linked strongly and the README requires macOS 26. It now deploys to macOS 26; the 26.4 APIs keep their runtime checks.
 - `cargo clippy -- -D warnings` failed on the current toolchain (`borrow_as_ptr`).
 - The explicit-nil schema test failed on macOS 27.0, whose schema encoding no longer marks explicitly-nil properties as required; the encoding checks now run on macOS 26 only.
+- Swift kept every `GenerationID` and refusal it handed to Rust in process-wide registries that never removed an entry: one per refusal and one per response or streamed snapshot whose content carried an ID. `GenerationId` and the `Refusal` carried by an error now own a reference-counted Swift handle that is released when the last clone drops. A payload's handles are reclaimed as soon as its callback returns unless Rust adopted them, and streamed snapshots no longer register IDs.
+- Respond, stream and token-count requests now read their prompt, instructions and schema before the Swift Task starts, while the caller still owns them. A `GenerationId` owned only by a prompt passed by value to `AsyncSession::respond` or `respond_generating` was released before Swift read it. A generation ID that is no longer alive is now an error instead of being dropped silently, and a tool output's generation IDs stay alive until Swift has built the prompt from it.
 
 ### Changed
 
 - **Breaking:** `FMError` variants carry an `ErrorMessage` (text plus metadata) instead of a `String`. It derefs to `str`, displays like the old string and converts from `String` and `&str`, so construct errors with `"...".into()` or `format!(...).into()`.
 - **Breaking:** `LanguageModelSession::log_feedback` returns `Result<Vec<u8>, FMError>` with the attachment data.
 - **Breaking:** `ffi`: `fm_session_create_ex` takes a release callback for the tool context, which Swift always consumes; the respond, stream, compile, refusal-explanation and async exports return a task handle to cancel with `fm_task_cancel` and release with `fm_object_release`; the async adapter exports use status-carrying callbacks (`FmObjectCallback`, `FmRespondCallback`).
+- **Breaking:** `GeneratedContent::generation_id` returns `Option<&GenerationId>`, and `generation_id_handle` is removed; use `GenerationId::best_effort_string` or `Display` for the text. `GenerationId` compares, hashes and debug-prints by the Swift value it owns.
+- **Breaking:** `ffi`: `fm_generation_id_create` returns a `u64` token and a description through out-pointers, `fm_refusal_explanation_json` and `fm_refusal_explanation_stream` take a `u64` token, and `fm_generation_id_retain`, `fm_generation_id_release`, `fm_refusal_retain` and `fm_refusal_release` manage the handles. Bridge payloads carry numeric tokens, text stream snapshots no longer include `rawContent`, and structured stream snapshots carry no generation IDs. The respond, stream and token-count exports report request decoding errors through the callback and return a null task.
 - `SystemLanguageModel::token_count` and `ConfiguredSystemLanguageModel::token_count` accept any `ToPrompt` (a `&str` still works).
 - Dropping a `LanguageModelSession` while a future is pending is supported; the future completes.
 - doom-fish-utils is a regular dependency with the requirement `>=0.4.1, <0.5`, the `backgroundassets` requirement is `>=0.4, <0.5`, and `rust-version` is 1.82.
@@ -48,6 +52,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamEvent::Replace`, delivered when the model rewrites text it already streamed.
 - `ErrorMessage`, re-exported from the crate root and the prelude.
 - Regression tests for tool-registry ownership, NUL-safe tool errors, panicking callbacks, stream-state lifetimes, grapheme-cluster deltas, typed async errors, sampling validation, cancellation, and a future that outlives its session.
+- Regression tests showing that the Swift handle registries return to their baseline after generation IDs, refusals, dropped futures, payloads nobody decodes, tool outputs, and live structured responses and streams.
 
 ### Removed
 
