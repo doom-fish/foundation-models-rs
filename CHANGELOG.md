@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The explicit-nil schema test failed on macOS 27.0, whose schema encoding no longer marks explicitly-nil properties as required; the encoding checks now run on macOS 26 only.
 - Swift kept every `GenerationID` and refusal it handed to Rust in process-wide registries that never removed an entry: one per refusal and one per response or streamed snapshot whose content carried an ID. `GenerationId` and the `Refusal` carried by an error now own a reference-counted Swift handle that is released when the last clone drops. A payload's handles are reclaimed as soon as its callback returns unless Rust adopted them, and streamed snapshots no longer register IDs.
 - Respond, stream and token-count requests now read their prompt, instructions and schema before the Swift Task starts, while the caller still owns them. A `GenerationId` owned only by a prompt passed by value to `AsyncSession::respond` or `respond_generating` was released before Swift read it. A generation ID that is no longer alive is now an error instead of being dropped silently, and a tool output's generation IDs stay alive until Swift has built the prompt from it.
+- On macOS 26.x, looking up adapters by name (`Adapter::from_name`, `Adapter::compatible_adapter_identifiers`, `Adapter::remove_obsolete_adapters` and the async equivalents) in a process without a bundle identifier crashed inside BackgroundAssets ("main bundle lacks an ID"). These calls now fail with `AdapterCompatibleNotFound`, return no identifiers, or remove nothing. macOS 27.0 reports this case itself.
 
 ### Changed
 
@@ -49,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `StreamEvent::Replace`, delivered when the model rewrites text it already streamed.
 - `ErrorMessage`, re-exported from the crate root and the prelude.
 - Regression tests for tool-registry ownership, NUL-safe tool errors, panicking callbacks, stream-state lifetimes, grapheme-cluster deltas, typed async errors, sampling validation, cancellation, and a future that outlives its session.
-- Regression tests showing that the Swift handle registries return to their baseline after generation IDs, refusals, dropped futures, payloads nobody decodes, tool outputs, and live structured responses and streams.
+- Regression tests showing that the Swift handle registries return to their baseline after generation IDs, refusals, dropped futures, payloads nobody decodes, tool outputs, and live structured responses and streams, and that named adapter lookups fail cleanly without an app bundle.
 
 ### Removed
 

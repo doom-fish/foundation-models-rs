@@ -41,7 +41,7 @@ public func fm_adapter_create_from_name_async(
         return startBridgeTask {
             do {
                 try Task.checkCancellation()
-                let adapter = try SystemLanguageModel.Adapter(name: nameStr)
+                let adapter = try namedAdapter(nameStr)
                 cb(ctx, Unmanaged.passRetained(AdapterBox(adapter)).toOpaque(), nil, FM_OK)
             } catch {
                 let (code, message) = mapError(error)
@@ -79,7 +79,7 @@ public func fm_adapter_compatibility_async(
         return startBridgeTask {
             do {
                 try Task.checkCancellation()
-                let ids = SystemLanguageModel.Adapter.compatibleAdapterIdentifiers(name: nameStr)
+                let ids = compatibleAdapterIdentifiers(name: nameStr)
                 cb(ctx, ffiString(try encodeBridge(ids)), nil, FM_OK)
             } catch {
                 let (code, message) = mapError(error)

@@ -15,6 +15,32 @@ final class AdapterBox {
 }
 
 @available(macOS 26.0, *)
+var processCanUseNamedAdapters: Bool {
+    if #available(macOS 27.0, *) {
+        return true
+    }
+    return Bundle.main.bundleIdentifier != nil
+}
+
+@available(macOS 26.0, *)
+func namedAdapter(_ name: String) throws -> SystemLanguageModel.Adapter {
+    guard processCanUseNamedAdapters else {
+        throw SystemLanguageModel.Adapter.AssetError.compatibleAdapterNotFound(.init(
+            debugDescription: "named adapters need an app bundle identifier, and this process has none"
+        ))
+    }
+    return try SystemLanguageModel.Adapter(name: name)
+}
+
+@available(macOS 26.0, *)
+func compatibleAdapterIdentifiers(name: String) -> [String] {
+    guard processCanUseNamedAdapters else {
+        return []
+    }
+    return SystemLanguageModel.Adapter.compatibleAdapterIdentifiers(name: name)
+}
+
+@available(macOS 26.0, *)
 func systemModelAvailabilityCode(for model: SystemLanguageModel) -> Int32 {
     switch model.availability {
     case .available:
@@ -322,7 +348,7 @@ public func fm_adapter_create_from_name(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         do {
-            let adapter = try SystemLanguageModel.Adapter(name: String(cString: name))
+            let adapter = try namedAdapter(String(cString: name))
             return Unmanaged.passRetained(AdapterBox(adapter)).toOpaque()
         } catch {
             writeErrorOut(errorOut, error.localizedDescription)
@@ -370,7 +396,7 @@ public func fm_adapter_compatible_identifiers_json(
 ) -> UnsafeMutablePointer<CChar>? {
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
-        let identifiers = SystemLanguageModel.Adapter.compatibleAdapterIdentifiers(name: String(cString: name))
+        let identifiers = compatibleAdapterIdentifiers(name: String(cString: name))
         return ffiString((try? encodeBridge(identifiers)) ?? "[]")
     }
     #endif
@@ -384,7 +410,9 @@ public func fm_adapter_remove_obsolete(
     #if canImport(FoundationModels) && FOUNDATION_MODELS_HAS_MACOS26_SDK
     if #available(macOS 26.0, *) {
         do {
-            try SystemLanguageModel.Adapter.removeObsoleteAdapters()
+            if processCanUseNamedAdapters {
+                try SystemLanguageModel.Adapter.removeObsoleteAdapters()
+            }
             return FM_OK
         } catch {
             let (code, message) = mapError(error)

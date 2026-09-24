@@ -109,8 +109,8 @@ mod async_api_tests {
     // AsyncAdapter — live adapter tests
     //
     // These tests call into Swift's Adapter API, which internally uses
-    // BackgroundAssets.  BackgroundAssets requires a real app bundle and
-    // crashes with "main bundle lacks an ID" in a headless test binary.
+    // BackgroundAssets.  BackgroundAssets only finds adapters for a real app
+    // bundle, so a headless test binary gets errors or empty results.
     // They are therefore gated behind the `FM_LIVE_ADAPTER_TESTS` env-var
     // (set e.g. by an on-device Xcode test runner) and skipped by default.
     // -----------------------------------------------------------------------

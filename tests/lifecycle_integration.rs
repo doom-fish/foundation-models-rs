@@ -30,6 +30,16 @@ fn file_urls_that_do_not_parse_return_an_error() {
 }
 
 #[test]
+fn named_adapters_fail_cleanly_without_an_app_bundle() {
+    let error = Adapter::from_name("com.example.definitely.not.installed")
+        .expect_err("a headless test binary has no named adapters");
+    assert!(!error.message().is_empty(), "{error:?}");
+    assert!(
+        Adapter::compatible_adapter_identifiers("com.example.definitely.not.installed").is_empty()
+    );
+}
+
+#[test]
 fn the_default_model_reports_a_context_size() {
     if !model_available() {
         return;
