@@ -245,3 +245,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Swift-only compile-time macros (`@Generable`, `@Guide`) remain represented by Rust runtime traits/builders rather than direct macro bindings.
 - `SystemLanguageModel.Adapter::isCompatible(_ assetPack:)` is intentionally not wrapped because it depends on `BackgroundAssets.AssetPack`, which this crate does not expose.
 - `GenerationID` remains opaque in the Apple SDK; generated-content IDs are surfaced as best-effort string metadata rather than a fully round-trippable Rust handle.
+
+## [0.5.0] - 2026-05-16
+
+### Added
+
+- Add transcript export and `log_feedback`.
+
+## [0.4.0] - 2026-05-16
+
+### Added
+
+- Add structured output through `Generable` schemas.
+
+## [0.3.0] - 2026-05-16
+
+### Added
+
+- Add `respond_with_json_schema` for schema-based responses.
+
+## [0.2.0] - 2026-05-16
+
+### Added
+
+- Add session prewarm operations and `is_responding`.
+
+## [0.1.0] - 2026-05-15
+
+### Added
+
+- Add the initial Foundation Models bindings.
+
+### Fixed
+
+- Read streamed text from `Snapshot.content`.
