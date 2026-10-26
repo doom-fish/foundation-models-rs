@@ -9,7 +9,10 @@ fn model_helpers_short_circuit_invalid_c_strings() {
             if message.contains("adapter name contains NUL byte")
     ));
 
-    assert!(Adapter::compatible_adapter_identifiers("bad\0adapter").is_empty());
+    assert_eq!(
+        Adapter::compatible_adapter_identifiers("bad\0adapter"),
+        [] as [std::string::String; 0]
+    );
     assert!(!SystemLanguageModel::supports_locale("en_US\0"));
 }
 
