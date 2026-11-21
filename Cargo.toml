@@ -1,6 +1,6 @@
 [package]
 name = "foundation-models"
-version = "0.12.2"
+version = "0.12.3"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/doom-fish/foundation-models-rs"
@@ -52,11 +52,11 @@ macos_26_0 = []
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-doom-fish-utils = { path = "../doom-fish-utils", version = ">=0.4.1, <0.5" }
+doom-fish-utils = { path = "../doom-fish-utils", version = "0.5.0" }
 
 [dev-dependencies]
 regex-lite = "0.1"
-tokio = { version = "1", features = ["sync", "rt", "rt-multi-thread", "macros"] }
+tokio = { version = "1.53.3", features = ["sync", "rt", "rt-multi-thread", "macros"] }
 pollster = "0.3"
 
 [package.metadata.docs.rs]

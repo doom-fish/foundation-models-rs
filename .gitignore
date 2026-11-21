@@ -3,4 +3,5 @@
 /swift-bridge/.swiftpm
 /swift-bridge/Package.resolved
 Cargo.lock
+!/Cargo.lock
 .DS_Store
