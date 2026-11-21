@@ -742,8 +742,9 @@ mod tests {
             drop(with_metadata);
 
             let fresh = FMError::ToolCallFailed(format!("tool failed {round}").into());
+            let cloned = fresh.clone();
             assert_eq!(fresh.failure_reason(), None);
-            assert_eq!(fresh.clone().failure_reason(), None);
+            assert_eq!(cloned.failure_reason(), None);
         }
     }
 
